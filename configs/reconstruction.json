@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "preprocessing": {"mode": "crop", "target_size": 518, "patch_size": 14},
+  "confidence": {"enabled": true, "threshold": null, "percentile": 25.0},
+  "voxel": {"size_relative": null, "median_depth_multiplier": 0.005},
+  "inference": {"precision": "auto", "timeout_seconds": 1800, "pilot_frames": [4, 8, 16]},
+  "verification": {"sample_observations": 5000, "cross_view_pairs": 12, "cross_view_samples_per_pair": 2000},
+  "viewer": {"max_points": 200000}
+}

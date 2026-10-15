@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "source_repository": "https://github.com/facebookresearch/vggt.git",
+  "source_revision": "a288dd0f14786c93483e45524328726ab7b1b4ce",
+  "checkpoint_repository": "facebook/VGGT-1B",
+  "checkpoint_revision": "860abec7937da0a4c03c41d3c269c366e82abdf9",
+  "checkpoint_filename": "model.safetensors",
+  "checkpoint_sha256": "f164acf60724910d8fe1578bb499d800850c7bb0948db7555c413f9fbe60467e",
+  "checkpoint_bytes": 5026367224,
+  "preprocessing_source_sha256": "d57b7a16c2e04333a2e68d365aa21f1dd61759e984f744cbcbe6b66d787f37ef",
+  "enabled_heads": ["camera", "depth"],
+  "torch": "2.8.0",
+  "torchvision": "0.23.0",
+  "torch_wheel_index": "https://download.pytorch.org/whl/cu126"
+}
