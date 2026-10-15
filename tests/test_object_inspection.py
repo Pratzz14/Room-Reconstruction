@@ -128,6 +128,53 @@ class InspectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspection.evidence("before", "../../mask")
 
+    def test_segmented_selection_auto_chooses_photo_without_frame_highlights(self):
+        obj = self.inventory.listing("before")["objects"][0]
+        scene = Scene()
+        inspection = ObjectInspection(self.inventory, scene)
+        inspection.support_cameras["before"] = core.read_json(
+            self.reconstruction / "before/cameras.json"
+        )
+        inspection.source_points_provider = lambda *_: self.fail(
+            "Segmented selections must not load frame clouds"
+        )
+        inspection.select("before", obj["id"])
+        inspection.refresh()
+        self.assertEqual(
+            inspection.snapshot()["source_frame"]["id"], obj["observation_ids"][0]
+        )
+        self.assertIn("/object/selected", scene.nodes)
+        self.assertGreater(inspection.visible_count, 0)
+        for node in (
+            "/object/source_camera",
+            "/object/source_frame",
+            "/object/source_points",
+        ):
+            self.assertNotIn(node, scene.nodes)
+        self.assertEqual(inspection.source_point_count, 0)
+        # Manual photo changes also leave the scene restricted to object geometry.
+        for identifier in obj["observation_ids"]:
+            inspection.set_evidence(identifier)
+            inspection.refresh()
+            self.assertEqual(inspection.source_frame()["id"], identifier)
+            self.assertNotIn("/object/source_camera", scene.nodes)
+        self.assertTrue(
+            inspection.evidence("before", inspection.selected_evidence).startswith(
+                b"\x89PNG"
+            )
+        )
+
+    def test_segmented_preview_prefers_a_geometry_supporting_observation(self):
+        obj, geometry = self.inventory.object(
+            "before", self.inventory.listing("before")["objects"][0]["id"]
+        )
+        preferred = obj["observation_ids"][-1]
+        refined = {**obj, "geometry_observation_ids": [preferred]}
+        inspection = ObjectInspection(self.inventory)
+        with patch.object(self.inventory, "object", return_value=(refined, geometry)):
+            inspection.select("before", obj["id"])
+        self.assertEqual(inspection.selected_evidence, preferred)
+
     def test_image_only_source_camera_and_context_outline(self):
         original = self.inventory.listing("before")["objects"][0]
         frame = self.inventory.captures["before"]["frames"][0]

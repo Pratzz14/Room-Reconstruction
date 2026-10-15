@@ -65,11 +65,16 @@ class ObjectInspection:
         obj, geometry = self.inventory.object(capture, identifier)
         self.clear(capture)
         self.selected, self.identifier, self.geometry = obj, identifier, geometry
-        if not obj.get("point_count"):
+        if obj.get("point_count"):
+            evidence = obj.get("geometry_observation_ids") or obj.get("observation_ids")
+            evidence = evidence or [
+                "context:" + eid for eid in obj.get("context_evidence", [])
+            ]
+        else:
             evidence = ["context:" + eid for eid in obj.get("context_evidence", [])]
             evidence += obj.get("observation_ids", [])
-            if evidence:
-                self.set_evidence(evidence[0])
+        if evidence:
+            self.set_evidence(evidence[0])
 
     def set_evidence(self, identifier):
         if self.selected is None or not isinstance(identifier, str):
@@ -101,6 +106,10 @@ class ObjectInspection:
         }
 
     def highlight_source_frame(self):
+        # Segmented objects show their source photo without highlighting the
+        # source camera or the wider frame in the 3D scene.
+        if self.selected is None or self.selected.get("point_count"):
+            return
         record = self.source_frame()
         cameras = self.support_cameras.get(self.capture, [])
         if not record or self.scene is None or not cameras:
