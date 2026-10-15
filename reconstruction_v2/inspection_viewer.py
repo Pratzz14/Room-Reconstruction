@@ -9,7 +9,7 @@ from .sync_viewer import _SyncState, check_viewer_ports, serve_viewer
 
 def object_view(root, objects, port=8094, refinement=None, comparison=None):
     root = Path(root).resolve()
-    check_viewer_ports(port)
+    check_viewer_ports(port, scene_count=2 if comparison else 1)
     manifest = read_json(root / "run_manifest.json")
     captures = [
         name
@@ -25,15 +25,23 @@ def object_view(root, objects, port=8094, refinement=None, comparison=None):
     inventory = ObjectInventory(root, objects)
     if comparison:
         from .comparison import ComparisonInventory
+
         if refinement:
             from .refined_inventory import RefinedInventory
+
             inventory = RefinedInventory(inventory, refinement)
         inventory = ComparisonInventory(inventory, comparison)
     elif refinement:
         from .refined_inventory import InventoryModes
+
         inventory = InventoryModes(inventory, refinement)
     maximum = (
         read_json(root / "config.json").get("viewer", {}).get("max_points", 200000)
     )
+    if comparison:
+        from .comparison_viewer import serve_comparison
+
+        serve_comparison(root, inventory, comparison, port, maximum)
+        return
     state = _SyncState(root, captures, maximum, inventory, static=True)
     serve_viewer(state, port, page_name="objects.html", title="Object inspection")

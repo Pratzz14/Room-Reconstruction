@@ -78,6 +78,7 @@ def main():
                     "alignment": report["alignment"]["quality"],
                     "identities": report["identity_counts"],
                     "changes": report["change_status"],
+                    "change_counts": report.get("change_counts", {}),
                     "provider_calls": 0,
                 },
                 indent=2,

@@ -9,6 +9,7 @@ import numpy as np
 
 from .alignment import apply_similarity, transform_bounds, validate_similarity
 from .change_detection import match_objects
+from .change_stage import ambiguous_objects, build_changes, saved_changes
 from .core import digest, identity, read_json, safe_path, write_json
 from .object_contracts import ObjectInventory, load_arrays
 from .refined_inventory import RefinedInventory
@@ -135,7 +136,7 @@ def export_aligned(inventory, output, transform, accepted):
 
 
 def validate_config(config):
-    if config.get("version") != "comparison-v1":
+    if config.get("version") not in ("comparison-v1", "comparison-v2"):
         raise ValueError("Unknown comparison config version")
     positive = (
         "sift_features",
@@ -162,6 +163,9 @@ def validate_config(config):
         raise ValueError("Invalid comparison fractions")
     if not 0 < config["minimum_scale"] < config["maximum_scale"]:
         raise ValueError("Invalid similarity scale limits")
+    fraction = config.get("movement_extent_fraction", 0.2)
+    if isinstance(fraction, bool) or not np.isfinite(fraction) or not 0 < fraction <= 1:
+        raise ValueError("Movement extent fraction must be in (0, 1]")
     return config
 
 
@@ -178,6 +182,10 @@ def run(reconstruction, objects, refinement, output, config):
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()) and not (output / "inputs.json").exists():
         raise ValueError("Nonempty output is not a comparison workspace")
+    if (output / "comparison.json").exists() and read_json(
+        output / "comparison.json"
+    ).get("version") != "comparison-v2":
+        raise ValueError("Preserve the older comparison; use a new output directory")
     with exclusive(output / ".comparison.lock"):
         inventory = load_inventory(reconstruction, objects, refinement)
         inputs = {"sources": source_binding(inventory), "config": config}
@@ -296,9 +304,25 @@ def run(reconstruction, objects, refinement, output, config):
                         "before_id": oid if cap == "before" else None,
                         "after_id": oid if cap == "after" else None,
                         "status": "unmatched",
-                        "reasons": ["no_supported_identity_match_not_absence"],
+                        "reasons": ["no_supported_identity_match"],
                     }
                 )
+        affected = ambiguous_objects(identities, matching)
+        for item in identities:
+            if {item["before_id"], item["after_id"]} & affected:
+                item["status"] = "ambiguous"
+                item["reasons"] = sorted(
+                    set(item.get("reasons", []) + ["competing_identity_group"])
+                )
+        changes = build_changes(
+            inventory,
+            identities,
+            matching,
+            alignment,
+            extent,
+            config.get("movement_extent_fraction", 0.2),
+        )
+        write_json(output / "changes.json", changes)
         write_json(
             output / "identities.json", {"identities": identities, "matching": matching}
         )
@@ -306,6 +330,7 @@ def run(reconstruction, objects, refinement, output, config):
             "inputs.json",
             "alignment.json",
             "identities.json",
+            "changes.json",
             "correspondences.npz",
             "correspondence_index.json",
         ]
@@ -318,7 +343,7 @@ def run(reconstruction, objects, refinement, output, config):
             else []
         )
         report = {
-            "version": "comparison-v1",
+            "version": "comparison-v2",
             "sources": inputs["sources"],
             "source_paths": {
                 "reconstruction": str(Path(reconstruction).resolve()),
@@ -328,7 +353,8 @@ def run(reconstruction, objects, refinement, output, config):
             "synthetic": inventory.manifest.get("synthetic", False),
             "alignment": alignment,
             "identity_counts": dict(Counter(x["status"] for x in identities)),
-            "change_status": "not_evaluated",
+            "change_status": "evaluated" if accepted else "uncertain_alignment",
+            "change_counts": changes["counts"],
             "provider_calls": 0,
             "code": {
                 name: digest(Path(__file__).with_name(name))
@@ -337,6 +363,7 @@ def run(reconstruction, objects, refinement, output, config):
                     "static_alignment.py",
                     "alignment.py",
                     "change_detection.py",
+                    "change_stage.py",
                 )
             },
             "artifacts": {p: digest(output / p) for p in files},
@@ -356,7 +383,7 @@ def summary(output, report, identities, inventory):
         "",
         f"Alignment: **{q['status']}**. Relative units, After → Before.",
         "",
-        f"Identity counts: {report['identity_counts']}. Provider calls: 0. Changes: not evaluated.",
+        f"Identity counts: {report['identity_counts']}. Provider calls: 0. Changes: {report['change_status']}.",
         "",
         "Rejected alignment permits a diagnostic overlay only; location comparisons remain blocked.",
         "",
@@ -379,9 +406,33 @@ def summary(output, report, identities, inventory):
         "",
         "See identities.json for costs, semantic/appearance/shape/position evidence and alternatives. Image evidence remains linked through capture-specific IDs and supporting frames in the source inventory.",
         "",
-        "No unmatched object is declared added/removed. Image-only objects keep null centroids. Alignment acceptance is an engineering quality gate on these saved reconstructions, not proof of metric accuracy or object movement.",
+        "Image-only objects keep null centroids. Reliable geometry is an MVP evidence basis, not independent metric validation.",
         "",
     ]
+    changes = read_json(output / "changes.json")
+    rows += [
+        "## Object changes",
+        "",
+        f"Counts: {changes['counts']}. Threshold: {changes['threshold']:.6g} relative units ({changes['movement_extent_fraction']:.0%} of room extent).",
+        "",
+        *["> " + assumption for assumption in changes["assumptions"]],
+        "",
+        "| Label | Shared identity | Change | Trust | Basis | Explanation |",
+        "|---|---|---|---|---|---|",
+    ]
+    for event in changes["events"]:
+        cells = [
+            event[k]
+            for k in ("label", "shared_id", "type", "trust", "basis", "explanation")
+        ]
+        rows.append(
+            "| "
+            + " | ".join(
+                str(cell).replace("|", "\\|").replace("\n", " ") for cell in cells
+            )
+            + " |"
+        )
+    rows.append("")
     (output / "summary.md").write_text("\n".join(rows), encoding="utf-8")
 
 
@@ -390,9 +441,9 @@ def verify(inventory, output):
     if (output / ".comparison.lock").exists():
         raise ValueError("Comparison writer active")
     report = read_json(output / "comparison.json")
-    if report.get("version") != "comparison-v1" or report["sources"] != source_binding(
-        inventory
-    ):
+    if report.get("version") not in ("comparison-v1", "comparison-v2") or report[
+        "sources"
+    ] != source_binding(inventory):
         raise ValueError("Comparison belongs to different source artifacts")
     required = {
         "inputs.json",
@@ -401,6 +452,8 @@ def verify(inventory, output):
         "correspondences.npz",
         "correspondence_index.json",
     }
+    if report["version"] == "comparison-v2":
+        required.add("changes.json")
     if report["alignment"]["transform"]:
         required |= {
             "after/cloud.npz",
@@ -432,6 +485,28 @@ def verify(inventory, output):
             )
     if dict(Counter(i["status"] for i in identities)) != report["identity_counts"]:
         raise ValueError("Shared identity counts disagree")
+    if report["version"] == "comparison-v2":
+        inputs = read_json(output / "inputs.json")
+        validate_config(inputs["config"])
+        if inputs["sources"] != report["sources"]:
+            raise ValueError("Comparison input sources disagree")
+        expected_changes = saved_changes(
+            inventory,
+            identities,
+            read_json(output / "identities.json")["matching"],
+            report["alignment"],
+            inputs["config"],
+        )
+        accepted = report["alignment"]["quality"]["status"] == "accepted"
+        if (
+            read_json(output / "changes.json") != expected_changes
+            or report.get("change_counts") != expected_changes["counts"]
+            or report["change_status"]
+            != ("evaluated" if accepted else "uncertain_alignment")
+        ):
+            raise ValueError(
+                "Changes disagree with source locations, identities or threshold"
+            )
     transform = report["alignment"]["transform"]
     if transform:
         validate_similarity(transform)
@@ -520,6 +595,11 @@ class ComparisonInventory:
                 Path(output) / "after/geometry.npz"
             )
         identities = read_json(Path(output) / "identities.json")["identities"]
+        changes = (
+            read_json(Path(output) / "changes.json")["events"]
+            if self.comparison["version"] == "comparison-v2"
+            else []
+        )
         for data in self.captures.values():
             for obj in data["objects"]:
                 related = [
@@ -540,6 +620,13 @@ class ComparisonInventory:
                     if i["before_id"] and i["after_id"]
                 ]
                 obj["shared_identity"] = related[0]["shared_id"] if related else None
+                event = next(
+                    (e for e in changes if e["shared_id"] == obj["shared_identity"]),
+                    None,
+                )
+                if event:
+                    obj["change"] = event
+                    obj["change_status"] = event["type"]
 
     def listing(self, capture):
         result = self.base.listing(capture)

@@ -16,7 +16,7 @@ from reconstruction_v2.comparison import (
     transformed_cameras,
     verify,
 )
-from reconstruction_v2.core import read_json, write_json
+from reconstruction_v2.core import digest, read_json, write_json
 from reconstruction_v2.object_contracts import ObjectInventory
 from reconstruction_v2.object_pipeline import run as detect
 from reconstruction_v2.static_alignment import extract_correspondences, fit_static
@@ -241,17 +241,46 @@ class ComparisonWorkflowTests(unittest.TestCase):
             report = run(self.reconstruction, self.objects, None, output, cfg)
             self.assertEqual(extract.call_count, 1)
         self.assertTrue(report["synthetic"])
+        self.assertEqual(report["version"], "comparison-v2")
+        changes = read_json(output / "changes.json")
+        self.assertEqual(sum(changes["counts"].values()), len(changes["events"]))
         inventory = ObjectInventory(self.reconstruction, self.objects)
         verify(inventory, output)
         reader = ComparisonInventory(inventory, output)
         self.assertEqual(
             reader.captures["after"]["objects"][0]["coordinate_frame"], "before_world"
         )
+        self.assertIn("change", reader.captures["after"]["objects"][0])
+        # Rehashing a changed measurement still cannot pass semantic verification.
+        changed = read_json(output / "changes.json")
+        changed["events"][0]["threshold"] += 1
+        write_json(output / "changes.json", changed)
+        report["artifacts"]["changes.json"] = digest(output / "changes.json")
+        write_json(output / "comparison.json", report)
+        with self.assertRaisesRegex(ValueError, "Changes disagree"):
+            verify(inventory, output)
+        write_json(output / "changes.json", changes)
+        report["artifacts"]["changes.json"] = digest(output / "changes.json")
+        write_json(output / "comparison.json", report)
         with patch(
             "reconstruction_v2.comparison.extract_correspondences",
             side_effect=AssertionError("cache should be reused"),
         ):
+            repeated = run(self.reconstruction, self.objects, None, output, cfg)
+        self.assertEqual(read_json(output / "changes.json"), changes)
+        self.assertEqual(repeated["change_counts"], report["change_counts"])
+        # Prior comparison versions remain readable, but run cannot overwrite them.
+        legacy = read_json(output / "comparison.json")
+        legacy["version"] = "comparison-v1"
+        legacy["change_status"] = "not_evaluated"
+        legacy["artifacts"].pop("changes.json")
+        write_json(output / "comparison.json", legacy)
+        self.assertEqual(verify(inventory, output)["version"], "comparison-v1")
+        original_digest = digest(output / "comparison.json")
+        with self.assertRaisesRegex(ValueError, "use a new output directory"):
             run(self.reconstruction, self.objects, None, output, cfg)
+        self.assertEqual(digest(output / "comparison.json"), original_digest)
+        write_json(output / "comparison.json", repeated)
         source = read_json(output / "after/objects.json")
         source["objects"][0]["centroid"][0] += 1
         write_json(output / "after/objects.json", source)

@@ -1,5 +1,6 @@
 {
-  "version": "comparison-v1",
+  "version": "comparison-v2",
+  "movement_extent_fraction": 0.2,
   "fixed_labels": ["refrigerator", "wardrobe", "bookshelf", "cabinet", "window", "door"],
   "sift_features": 1800,
   "ratio_test": 0.7,

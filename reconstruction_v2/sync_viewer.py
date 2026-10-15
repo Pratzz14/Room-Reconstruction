@@ -71,6 +71,7 @@ class _SyncState:
                     "objects_available": self.inspection is not None,
                     "view_mode": "objects" if self.static else "playback",
                     "comparison": self.comparison["alignment"] if self.comparison else None,
+                    "change_counts": self.comparison.get("change_counts") if self.comparison else None,
                     "overlay": self.overlay}
 
     def snapshot(self):
@@ -496,13 +497,13 @@ def make_handler(state, videos, media_records, scene_port, page_name="sync.html"
     return Handler
 
 
-def check_viewer_ports(port):
-    if not 1 <= port <= 65534:
-        raise ValueError("Choose a port between 1 and 65534 (the scene uses the next port)")
+def check_viewer_ports(port, scene_count=1):
+    if not 1 <= port <= 65535 - scene_count:
+        raise ValueError(f"Choose a port between 1 and {65535 - scene_count} (room scenes use subsequent ports)")
     # Viser otherwise silently chooses a new port, breaking the embedded page.
     sockets = []
     try:
-        for requested in (port, port + 1):
+        for requested in range(port, port + scene_count + 1):
             probe = socket.socket()
             sockets.append(probe)
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):

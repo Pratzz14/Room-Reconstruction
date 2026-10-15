@@ -157,6 +157,7 @@ def match_objects(
     matrix[n + np.arange(m), np.arange(m)] = threshold / 2
     matrix[n:, m:] = 0
     rows, cols = linear_sum_assignment(matrix)
+    chosen = dict(zip(rows.tolist(), cols.tolist()))
     optimal = float(matrix[rows, cols].sum())
     matches, candidates, mb, ma = [], [], set(), set()
     for i in range(n):
@@ -189,7 +190,7 @@ def match_objects(
         ]
         hint = hints.get((before[i]["id"], after[j]["id"]))
         reasons = []
-        if gap < margin or row_alts or col_alts:
+        if gap <= margin or row_alts or col_alts:
             reasons.append("competing_global_assignments")
         if hint and (hint.get("status") == "ambiguous" or hint.get("alternatives")):
             reasons.append("ambiguous_visual_proposal")
@@ -216,6 +217,13 @@ def match_objects(
                 "features": f,
                 "alternatives": row_alts,
                 "alternative_before_ids": col_alts,
+                "global_alternative_pairs": [
+                    [before[row]["id"], after[col]["id"] if col < m else None]
+                    for row, col in zip(ar.tolist(), ac.tolist())
+                    if row < n and col != chosen[row]
+                ]
+                if gap <= margin
+                else [],
                 "reasons": reasons,
                 "geometry_verified": False,
             }
@@ -244,7 +252,7 @@ def classify_changes(
     before_free=None,
     after_free=None,
 ):
-    """Later-stage helper: visibility/presence alone never establishes absence."""
+    """Legacy standalone helper; the connected run uses change_stage's MVP rules."""
     if not np.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("Positive movement tolerance required")
     b, a = ({o["id"]: o for o in group} for group in (before, after))

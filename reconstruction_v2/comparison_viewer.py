@@ -1,0 +1,346 @@
+"""Two independent room scenes controlled by one shared-identity selection."""
+
+import json
+import secrets
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from .core import read_json
+from .region_reference import RegionReferences
+from .sync_viewer import _SyncState
+
+CAPTURES = ("before", "after")
+
+
+class ComparisonState:
+    def __init__(self, root, inventory, comparison, maximum=200000):
+        self.lock = threading.RLock()
+        self.session, self.sequence, self.selected = None, -1, None
+        self.views = {
+            capture: _SyncState(root, [capture], maximum, inventory, static=True)
+            for capture in CAPTURES
+        }
+        for view in self.views.values():
+            view.overlay = False
+            view.settings[view.capture]["show_path"] = False
+        self.items = {}
+        for identity in read_json(Path(comparison) / "identities.json")["identities"]:
+            sides = {}
+            for capture in CAPTURES:
+                oid = identity[capture + "_id"]
+                if oid is None:
+                    sides[capture] = None
+                    continue
+                obj, _ = inventory.object(capture, oid)
+                inspection = self.views[capture].inspection
+                observations = obj.get(
+                    "geometry_observation_ids", obj["observation_ids"]
+                )
+                context = ["context:" + eid for eid in obj.get("context_evidence", [])]
+                evidence = list(
+                    dict.fromkeys(
+                        (observations + context + obj["observation_ids"])
+                        if obj["point_count"]
+                        else (context + obj["observation_ids"])
+                    )
+                )
+                frames = []
+                for eid in evidence:
+                    record = inspection.evidence_record(capture, eid)
+                    frames.append(
+                        {
+                            "id": eid,
+                            "frame_id": record["frame_id"],
+                            "timestamp_sec": record["timestamp_sec"],
+                            "context": record.get("status") == "context",
+                        }
+                    )
+                sides[capture] = {
+                    "id": oid,
+                    "point_count": obj["point_count"],
+                    "frames": frames,
+                }
+            label_obj = next(
+                inventory.object(c, identity[c + "_id"])[0]
+                for c in CAPTURES
+                if identity[c + "_id"]
+            )
+            change = label_obj.get("change", {})
+            self.items[identity["shared_id"]] = {
+                "shared_id": identity["shared_id"],
+                "label": label_obj["label"],
+                "status": identity["status"],
+                "type": change.get("type", "not_evaluated"),
+                "trust": change.get("trust", "uncertain"),
+                "explanation": change.get(
+                    "explanation", "Change classification unavailable."
+                ),
+                "sides": sides,
+            }
+        self.counts = inventory.comparison.get("change_counts", {})
+        self.alignment = inventory.comparison["alignment"]["quality"]["status"]
+        self.region_frames = RegionReferences(inventory, self.views)
+        self.references = dict.fromkeys(CAPTURES)
+
+    def begin_session(self):
+        with self.lock:
+            self.session, self.sequence = secrets.token_urlsafe(24), -1
+            for view in self.views.values():
+                view.begin_session()
+            return {
+                "session": self.session,
+                "items": list(self.items.values()),
+                "counts": self.counts,
+                "alignment": self.alignment,
+                **self.snapshot(),
+            }
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "sequence": self.sequence,
+                "selected": self.items.get(self.selected),
+                "region_references": self.references,
+                "views": {
+                    capture: view.snapshot() for capture, view in self.views.items()
+                },
+            }
+
+    def update(self, payload):
+        with self.lock:
+            if payload.get("session") != self.session or self.session is None:
+                raise PermissionError(
+                    "Another page controls this viewer. Reload to take control."
+                )
+            sequence = payload.get("sequence")
+            if type(sequence) is not int or sequence < 0:
+                raise ValueError("Non-negative integer sequence required")
+            if sequence <= self.sequence:
+                return {**self.snapshot(), "stale": True}
+            if set(payload) - {
+                "session",
+                "sequence",
+                "select",
+                "frames",
+                "settings",
+                "fit",
+            }:
+                raise ValueError("Unknown comparison action")
+            selected = payload.get("select", self.selected)
+            if selected is not None and selected not in self.items:
+                raise ValueError("Unknown shared identity")
+            frames, settings = payload.get("frames", {}), payload.get("settings", {})
+            if not isinstance(frames, dict) or set(frames) - set(CAPTURES):
+                raise ValueError("Invalid source frames")
+            if not isinstance(settings, dict) or set(settings) - {
+                "crop_enabled",
+                "show_path",
+            }:
+                raise ValueError("Invalid room settings")
+            if (
+                any(type(v) is not bool for v in settings.values())
+                or type(payload.get("fit", False)) is not bool
+            ):
+                raise ValueError("Room controls must be boolean")
+            item = self.items.get(selected)
+            actions = {}
+            references = dict.fromkeys(CAPTURES)
+            # First validate genuine object frames. Opposing region references
+            # remain separate from object evidence and never select an object.
+            if item:
+                for capture in CAPTURES:
+                    side = item["sides"][capture]
+                    if (
+                        side
+                        and capture in frames
+                        and frames[capture] not in {f["id"] for f in side["frames"]}
+                    ):
+                        raise ValueError("Frame does not support the selected object")
+                for capture in CAPTURES:
+                    if item["sides"][capture] is not None:
+                        continue
+                    source_capture = "after" if capture == "before" else "before"
+                    side = item["sides"][source_capture]
+                    source_id = frames.get(source_capture)
+                    if source_id is None:
+                        if "select" in payload:
+                            source_id = (
+                                side["frames"][0]["id"] if side["frames"] else None
+                            )
+                        else:
+                            source_id = self.views[
+                                source_capture
+                            ].inspection.selected_evidence
+                    obj, _ = self.views[source_capture].inspection.inventory.object(
+                        source_capture, side["id"]
+                    )
+                    bundle = self.region_frames.candidates(
+                        source_capture, obj, source_id, capture
+                    )
+                    previous = self.references[capture]
+                    chosen = frames.get(capture)
+                    if (
+                        chosen is None
+                        and previous
+                        and previous["token"] == bundle["token"]
+                    ):
+                        chosen = (
+                            previous["selected"]["id"] if previous["selected"] else None
+                        )
+                    if chosen is None and bundle["frames"]:
+                        chosen = bundle["frames"][0]["id"]
+                    record = next(
+                        (r for r in bundle["frames"] if r["id"] == chosen), None
+                    )
+                    if capture in frames and record is None:
+                        raise ValueError("Unknown region reference frame")
+                    references[capture] = {**bundle, "selected": record}
+            # Validate both sides before either scene changes.
+            for capture in CAPTURES:
+                side = item["sides"][capture] if item else None
+                action = {}
+                if "select" in payload:
+                    action = {"select": side["id"]} if side else {"clear": True}
+                    if side and side["frames"]:
+                        action["evidence"] = side["frames"][0]["id"]
+                if capture in frames:
+                    if side is None and references[capture] is not None:
+                        actions[capture] = action
+                        continue
+                    allowed = {f["id"] for f in side["frames"]} if side else set()
+                    if frames[capture] not in allowed:
+                        raise ValueError("Frame does not support the selected object")
+                    action["evidence"] = frames[capture]
+                actions[capture] = action
+            for capture, view in self.views.items():
+                view.update(
+                    capture,
+                    0,
+                    sequence,
+                    view.session,
+                    settings=settings,
+                    fit=payload.get("fit", False),
+                    object_action=actions[capture] or None,
+                )
+            self.selected, self.sequence = selected, sequence
+            self.references = references
+            return self.snapshot()
+
+
+def make_comparison_handler(state, scene_ports):
+    page = Path(__file__).with_name("comparison.html").read_bytes()
+    for capture, port in scene_ports.items():
+        page = page.replace(
+            ("__" + capture.upper() + "_PORT__").encode(), str(port).encode()
+        )
+
+    class Handler(BaseHTTPRequestHandler):
+        def send(self, body, content_type="application/json", status=200):
+            if content_type == "application/json":
+                body = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = urlparse(self.path).path
+            try:
+                if path == "/":
+                    self.send(page, "text/html; charset=utf-8")
+                elif path == "/status":
+                    self.send(state.snapshot())
+                elif path == "/favicon.ico":
+                    self.send(b"", "image/x-icon", 204)
+                elif path.startswith("/region/"):
+                    parts = path.strip("/").split("/")
+                    if len(parts) != 4 or parts[1] not in CAPTURES:
+                        raise ValueError("Unknown region reference")
+                    data = state.region_frames.image(
+                        parts[1], parts[2], unquote(parts[3])
+                    )
+                    self.send(data, "image/png")
+                elif path.startswith("/evidence/"):
+                    parts = path.strip("/").split("/")
+                    if len(parts) != 4 or parts[1] not in CAPTURES:
+                        raise ValueError("Unknown evidence")
+                    data = state.views[parts[1]].inspection.evidence(
+                        parts[1], unquote(parts[2]), parts[3]
+                    )
+                    self.send(data, "image/png")
+                else:
+                    self.send({"error": "Not found"}, status=404)
+            except (KeyError, ValueError, FileNotFoundError) as exc:
+                self.send({"error": str(exc)}, status=404)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
+        def do_POST(self):
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 16384:
+                    raise ValueError("Invalid request length")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise TypeError("Expected JSON object")
+                path = urlparse(self.path).path
+                if path == "/session":
+                    self.send(state.begin_session())
+                elif path == "/inspect":
+                    self.send(state.update(payload))
+                else:
+                    self.send({"error": "Not found"}, status=404)
+            except PermissionError as exc:
+                self.send({"error": str(exc)}, status=409)
+            except (KeyError, ValueError, TypeError) as exc:
+                self.send({"error": str(exc)}, status=400)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
+        def log_message(self, *_):
+            pass
+
+    return Handler
+
+
+def serve_comparison(root, inventory, comparison, port, maximum):
+    import viser
+
+    state = ComparisonState(root, inventory, comparison, maximum)
+    servers, http = [], None
+    scene_ports = {capture: port + i + 1 for i, capture in enumerate(CAPTURES)}
+    try:
+        for capture, view in state.views.items():
+            server = viser.ViserServer(host="127.0.0.1", port=scene_ports[capture])
+            servers.append(server)
+            server.gui.configure_theme(
+                dark_mode=True,
+                show_logo=False,
+                show_share_button=False,
+                control_layout="floating",
+            )
+            server.gui.main_panel.minimize()
+            server.scene.world_axes.visible = False
+            server.scene.set_up_direction("-y")
+            view.load(server)
+            server.on_client_connect(view.connect)
+            server.on_client_disconnect(view.disconnect)
+        http = ThreadingHTTPServer(
+            ("127.0.0.1", port), make_comparison_handler(state, scene_ports)
+        )
+        print(
+            f"Before / After comparison: http://127.0.0.1:{port} (Ctrl+C to stop)",
+            flush=True,
+        )
+        http.serve_forever()
+    except KeyboardInterrupt:
+        print("Stopping comparison viewer.", flush=True)
+    finally:
+        if http:
+            http.server_close()
+        for server in servers:
+            server.stop()

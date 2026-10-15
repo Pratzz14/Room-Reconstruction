@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Room changes · Before and After</title>
+  <style>
+    :root{color-scheme:dark;font:14px/1.45 system-ui,sans-serif;background:#101318;color:#e8eaed}
+    *{box-sizing:border-box}body{margin:0;height:100dvh;display:flex;flex-direction:column}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px 10px}h1{margin:0;font-size:20px}h2{margin:0;font-size:16px}.muted{font-size:12px;color:#aebdce}
+    button,input,select{font:inherit}button,select,input[type=search]{background:#222c38;color:inherit;border:1px solid #48576b;border-radius:5px;padding:7px 9px;min-width:0}button{cursor:pointer}button:hover{background:#34455a}button:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #78bcff;outline-offset:2px}
+    #status{padding:0 20px 10px;font-size:12px;color:#aebdce;min-height:28px}#status.error{color:#ffb2a8}.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}label{display:flex;gap:6px;align-items:center;font-size:12px}
+    main{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;padding:0 12px 12px;min-height:0;flex:1}.sidebar{background:#171f29;border:1px solid #303d4d;border-radius:8px;display:flex;flex-direction:column;min-height:0;padding:15px;gap:12px;overflow:auto}.sidebar input,.sidebar select{width:100%}#object-list{height:240px;flex:none;font-size:12px;padding:4px}#object-list option{padding:7px 4px}#selection-detail{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c3cfde;margin:0}.legend{font-size:12px;border-top:1px solid #344151;padding-top:12px;color:#b4c3d4}.legend p{margin:5px 0}.cyan{color:#1ee6ff}.amber{color:#ffb932}
+    .rooms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-height:0}.room{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid #344151;border-radius:8px;overflow:hidden;background:#080b10}.room-heading{padding:12px 14px;background:#1a232e;border-bottom:1px solid #303d4d}.room-heading>div{display:flex;align-items:center;justify-content:space-between}.room-note{font-size:12px;color:#becbdd;margin-top:5px;min-height:35px;overflow-wrap:anywhere}.room-body{position:relative;flex:1;min-height:0}.scene{position:absolute;inset:0;width:100%;height:100%;border:0;transform-origin:top left;background:#080b10}
+    .frame-popup{position:absolute;bottom:12px;left:12px;right:12px;max-width:340px;background:#17222fee;border:1px solid #72869c;border-radius:7px;overflow:hidden;box-shadow:0 5px 24px #0008}.frame-title{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;font-size:12px;gap:8px}.frame-title button{padding:1px 7px}.frame-popup select{width:calc(100% - 16px);margin:0 8px 8px;font-size:11px}.frame-popup img{width:100%;height:160px;object-fit:contain;display:block;background:#080b10;cursor:zoom-in}.frame-caption{padding:7px 10px;font-size:11px;color:#bdccdc}.frame-open{color:#a9dfff;background:none;border:0;padding:0;font-size:11px}
+    dialog{border:1px solid #6d8198;border-radius:9px;background:#111a25;color:#e8eaed;padding:12px;width:min(1100px,94vw);max-height:94dvh}dialog::backdrop{background:#000b}dialog .actions{justify-content:space-between;margin-bottom:12px}dialog img{width:100%;max-height:78dvh;object-fit:contain}#modal-caption{font-size:12px;overflow-wrap:anywhere}footer{font-size:11px;color:#94a6bb;padding:0 16px 9px}[hidden]{display:none!important}
+    @media(max-width:1100px){main{grid-template-columns:230px minmax(0,1fr)}.frame-popup img{height:120px}}
+    @media(max-width:760px){body{height:auto;min-height:100dvh}header{align-items:flex-start;flex-direction:column;padding:12px}#status{padding-inline:12px}main{grid-template-columns:1fr;flex:none}.sidebar{max-height:42dvh}#object-list{height:140px}.rooms{grid-template-columns:1fr}.room{height:72dvh;min-height:430px}.frame-popup img{height:140px}.room-note{min-height:0}.frame-popup{max-width:300px}h1{font-size:18px}}
+  </style>
+</head>
+<body>
+  <header><div><h1>Before / After</h1><div class="muted">Choose one object to inspect it in both recordings</div></div><div class="actions"><button id="fit">Fit rooms</button><label><input id="ceiling" type="checkbox">Hide ceiling</label><label><input id="paths" type="checkbox">Camera paths</label></div></header>
+  <div id="status" role="status" aria-live="polite">Connecting to both room views…</div>
+  <main>
+    <aside class="sidebar" aria-label="Shared objects">
+      <h2>Objects</h2><div id="counts" class="muted"></div>
+      <input id="search" type="search" aria-label="Search objects" placeholder="Search object name">
+      <select id="filter" aria-label="Change filter"><option value="all">All changes</option><option>moved</option><option>added</option><option>removed</option><option>unchanged</option><option>uncertain</option></select>
+      <select id="object-list" size="8" aria-label="Shared object list"></select>
+      <div class="actions"><button id="clear">Clear selection</button><button id="show-frames" disabled>Show frames</button></div>
+      <p id="selection-detail">Select an object to highlight its location and open the supporting frames.</p>
+      <div class="legend"><p class="cyan">Cyan · saved object points</p><p class="amber">Amber · supporting frame area for image-only objects</p><p style="color:#cca5ff">Purple outline · region to inspect on the missing side</p><p>Drag either room to orbit. Scroll to zoom.</p></div>
+    </aside>
+    <div class="rooms">
+      <section class="room" aria-label="Before room">
+        <div class="room-heading"><div><h2>Before</h2><span id="before-ready" class="muted">Connecting…</span></div><div id="before-note" class="room-note">Select an object from the left.</div></div>
+        <div class="room-body"><iframe class="scene" id="before-scene" src="http://127.0.0.1:__BEFORE_PORT__/" title="Before 3D room"></iframe>
+          <div class="frame-popup" id="before-popup" hidden><div class="frame-title"><strong id="before-frame-title">Before · source frame</strong><button data-close="before" aria-label="Close Before frame">×</button></div><select id="before-frame" aria-label="Before supporting frame"></select><img id="before-image" alt="Before supporting frame"><div class="frame-caption"><span id="before-caption"></span> · <button class="frame-open" data-enlarge="before">Enlarge</button></div></div>
+        </div>
+      </section>
+      <section class="room" aria-label="After room">
+        <div class="room-heading"><div><h2>After</h2><span id="after-ready" class="muted">Connecting…</span></div><div id="after-note" class="room-note">Select an object from the left.</div></div>
+        <div class="room-body"><iframe class="scene" id="after-scene" src="http://127.0.0.1:__AFTER_PORT__/" title="After 3D room"></iframe>
+          <div class="frame-popup" id="after-popup" hidden><div class="frame-title"><strong id="after-frame-title">After · source frame</strong><button data-close="after" aria-label="Close After frame">×</button></div><select id="after-frame" aria-label="After supporting frame"></select><img id="after-image" alt="After supporting frame"><div class="frame-caption"><span id="after-caption"></span> · <button class="frame-open" data-enlarge="after">Enlarge</button></div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer id="footer">Separate room views · source artifacts preserved · relative units</footer>
+  <dialog id="frame-modal" aria-label="Enlarged supporting frame"><div class="actions"><strong id="modal-title"></strong><button id="modal-close">Close</button></div><img id="modal-image" alt="Enlarged supporting source frame"><p id="modal-caption"></p></dialog>
+  <script>
+    const $=id=>document.getElementById(id), captures=['before','after'];
+    let session=null,sequence=0,items=[],selected=null,busy=false,pending=null,fatal=false,lastSnapshot=null;
+    const popupOpen={before:false,after:false}, frameKeys={before:null,after:null};
+    function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);}
+    async function post(path,payload){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),v=await r.json();if(!r.ok){const e=new Error(v.error||'Request failed');e.code=r.status;throw e;}return v;}
+    function filterObjects(){const query=$('search').value.toLowerCase(),type=$('filter').value,list=$('object-list');list.replaceChildren();for(const item of items.filter(i=>i.label.toLowerCase().includes(query)&&(type==='all'||i.type===type))){const sides=captures.filter(c=>item.sides[c]).map(c=>c==='before'?'Before':'After').join(' + ');list.add(new Option(`${item.label} · ${item.type} · ${sides}`,item.shared_id));}list.value=selected||'';}
+    function evidenceUrl(capture,id){return '/evidence/'+capture+'/'+encodeURIComponent(id)+'/overlay';}
+    function render(snapshot){
+      lastSnapshot=snapshot;const item=snapshot.selected;
+      $('show-frames').disabled=!item;
+      $('selection-detail').textContent=item?`${item.label}\n${item.type} · ${item.trust}\n${item.explanation}${item.status==='ambiguous'?'\nPossible identity match: the correspondence remains uncertain.':''}`:'Select an object to highlight its location and open the supporting frames.';
+      for(const c of captures){
+        const view=snapshot.views[c],side=item&&item.sides[c],inspection=view.inspection,reference=snapshot.region_references&&snapshot.region_references[c],source=side?inspection&&inspection.source_frame:reference&&reference.selected;
+        $(c+'-ready').textContent=view.ready?'Ready':'Connecting…';
+        $(c+'-note').textContent=!item?'Select an object from the left.':!side?(source&&source.box_original?'Not detected · inspect the corresponding region below.':'Not detected · choose a reference frame to compare.'):`${item.status==='ambiguous'?'Possible match · ':''}${side.point_count?'Cyan: object points highlighted.':'Image-only · amber: supporting frame area.'}`;
+        $(c+'-popup').hidden=!(source&&popupOpen[c]);$(c+'-frame-title').textContent=(c==='before'?'Before':'After')+(side?' · source frame':' · region reference');
+        if(!source){frameKeys[c]=null;$(c+'-frame').dataset.object='';$(c+'-frame').replaceChildren();$(c+'-image').removeAttribute('src');continue;}
+        const select=$(c+'-frame'),frameList=side?side.frames:reference.frames,owner=side?side.id:reference.token;
+        if(select.dataset.object!==owner){select.dataset.object=owner;select.replaceChildren();for(const f of frameList)select.add(new Option(`${f.timestamp_sec.toFixed(2)}s · frame ${f.frame_id.split('_').at(-1).replace(/^0+(?=\d)/,'')}${f.method==='projected_region'?' · projected region':f.method==='manual_reference'?' · manual reference':f.context?' · context':''}`,f.id));}
+        select.value=source.id;const key=owner+'|'+source.id;
+        if(frameKeys[c]!==key){frameKeys[c]=key;$(c+'-image').src=side?evidenceUrl(c,source.id):'/region/'+c+'/'+reference.token+'/'+encodeURIComponent(source.id);}
+        const frame=frameList.find(f=>f.id===source.id);
+        $(c+'-caption').textContent=`${source.timestamp_sec.toFixed(2)}s · ${!side?(source.box_original?'projected area · verify absence visually':'manual region reference'):frame&&frame.context?'context region':'object mask'}`;
+      }
+    }
+    function request(action){if(fatal||!session)return;const previous=pending||{};pending={...previous,...action};if(action.frames)pending.frames={...(previous.frames||{}),...action.frames};if(Object.hasOwn(action,'select'))delete pending.frames;drain();}
+    async function drain(){if(busy||!pending||fatal)return;const action=pending;pending=null;const current=++sequence;busy=true;try{const result=await post('/inspect',{session,sequence:current,...action});if(!pending){render(result);message('Both room views · select an object to compare its evidence');}}catch(e){message(e.message,true);if(e.code===409)fatal=true;}finally{busy=false;if(pending)drain();}}
+    $('object-list').onchange=()=>{selected=$('object-list').value;if(!selected)return;for(const c of captures){popupOpen[c]=true;frameKeys[c]=null;$(c+'-popup').hidden=true;$(c+'-frame').dataset.object='';}if($('frame-modal').open)$('frame-modal').close();request({select:selected});};
+    $('clear').onclick=()=>{selected=null;for(const c of captures)popupOpen[c]=false;$('object-list').value='';if($('frame-modal').open)$('frame-modal').close();request({select:null});};
+    $('show-frames').onclick=()=>{for(const c of captures)popupOpen[c]=true;if(lastSnapshot)render(lastSnapshot);};
+    $('search').oninput=filterObjects;$('filter').onchange=filterObjects;
+    $('fit').onclick=()=>request({fit:true});for(const id of ['ceiling','paths'])$(id).onchange=()=>request({settings:{crop_enabled:$('ceiling').checked,show_path:$('paths').checked}});
+    for(const c of captures){$(c+'-frame').onchange=()=>request({frames:{[c]:$(c+'-frame').value}});document.querySelector(`[data-close="${c}"]`).onclick=()=>{popupOpen[c]=false;$(c+'-popup').hidden=true;};
+      const enlarge=()=>{if(!lastSnapshot||!lastSnapshot.selected)return;const side=lastSnapshot.selected.sides[c],reference=lastSnapshot.region_references&&lastSnapshot.region_references[c],source=side?lastSnapshot.views[c].inspection.source_frame:reference&&reference.selected;if(!source)return;$('modal-title').textContent=(c==='before'?'Before':'After')+' · '+lastSnapshot.selected.label;$('modal-image').src=side?evidenceUrl(c,source.id):'/region/'+c+'/'+reference.token+'/'+encodeURIComponent(source.id);$('modal-caption').textContent=source.frame_id+' · '+source.timestamp_sec.toFixed(3)+'s'+(side?'':' · Region reference; absence is not automatically verified.');$('frame-modal').showModal();};
+      $(c+'-image').onclick=enlarge;document.querySelector(`[data-enlarge="${c}"]`).onclick=enlarge;
+      new ResizeObserver(([entry])=>{const {width,height}=entry.contentRect;if(!width||!height)return;const scale=Math.min(1,width/640),frame=$(c+'-scene');frame.style.width=width/scale+'px';frame.style.height=height/scale+'px';frame.style.transform=`scale(${scale})`;}).observe($(c+'-scene').parentElement);
+    }
+    $('modal-close').onclick=()=>$('frame-modal').close();
+    async function poll(){try{const r=await fetch('/status');if(!r.ok)throw new Error('Room server unavailable');const s=await r.json();for(const c of captures)$(c+'-ready').textContent=s.views[c].ready?'Ready':'Connecting…';}catch(e){message(e.message,true);}if(!fatal)setTimeout(poll,1000);}
+    (async()=>{try{const config=await post('/session',{});session=config.session;items=config.items;selected=config.selected&&config.selected.shared_id;for(const c of captures)popupOpen[c]=!!selected;filterObjects();$('counts').textContent=items.length+' shared identities · '+Object.entries(config.counts).map(([k,v])=>v+' '+k).join(' · ');$('footer').textContent='Alignment: '+config.alignment+' · independent orbit controls · relative units';render(config);message('Before on the left · After on the right');poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
+  </script>
+</body>
+</html>
