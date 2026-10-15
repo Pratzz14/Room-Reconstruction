@@ -28,17 +28,22 @@ def main():
             p.add_argument("--capture", choices=("before", "after"))
         else:
             p.add_argument("--capture", choices=("before", "after"), required=True)
-    for name in ("verify", "view", "sync-view", "pack", "preview"):
+    for name in ("verify", "view", "sync-view", "object-view", "pack", "preview"):
         p = commands.add_parser(name)
         p.add_argument("--run", type=Path, required=True)
         if name == "pack":
             p.add_argument("--archive", type=Path, required=True)
         if name == "view":
             p.add_argument("--port", type=int, default=8090)
+            p.add_argument("--objects", type=Path)
         if name == "sync-view":
             p.add_argument("--port", type=int, default=8092)
+            p.add_argument("--objects", type=Path)
             p.add_argument("--before-video", type=Path)
             p.add_argument("--after-video", type=Path)
+        if name == "object-view":
+            p.add_argument("--port", type=int, default=8094)
+            p.add_argument("--objects", type=Path, required=True)
         if name == "preview":
             p.add_argument("--port", type=int, default=8091)
     p = commands.add_parser("import")
@@ -63,11 +68,15 @@ def main():
         result = pack(args.run, args.archive) if args.command == "pack" else import_archive(args.archive, args.output)
     elif args.command == "view":
         from reconstruction_v2.viewer import view
-        view(args.run, args.port)
+        view(args.run, args.port, objects=args.objects)
         return 0
     elif args.command == "sync-view":
         from reconstruction_v2.sync_viewer import synchronized_view
-        synchronized_view(args.run, args.port, args.before_video, args.after_video)
+        synchronized_view(args.run, args.port, args.before_video, args.after_video, objects=args.objects)
+        return 0
+    elif args.command == "object-view":
+        from reconstruction_v2.inspection_viewer import object_view
+        object_view(args.run, args.objects, args.port)
         return 0
     else:
         from functools import partial

@@ -1,0 +1,9 @@
+# Isolated Colab environment only. Keep saved viewing on requirements-viewer.txt.
+torch==2.8.0
+torchvision==0.23.0
+transformers==5.13.0
+huggingface-hub>=1.0,<2
+safetensors>=0.6,<1
+numpy>=2,<3
+Pillow>=11,<13
+scipy>=1.14,<2

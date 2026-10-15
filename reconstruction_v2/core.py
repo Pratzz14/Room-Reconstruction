@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import platform
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,12 +30,23 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def atomic_replace(source, destination):
+    """Bounded retry for transient Windows/OneDrive sharing failures."""
+    for attempt in range(6):
+        try:
+            return Path(source).replace(destination)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 5:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+
+
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    atomic_replace(temporary, path)
 
 
 def safe_path(root, relative):

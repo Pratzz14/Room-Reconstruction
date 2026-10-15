@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "device": "cuda",
+  "seed": 42,
+  "detection": {
+    "vocabulary": ["chair", "refrigerator", "cabinet", "table", "sofa", "shelf", "monitor", "television", "lamp", "plant", "bin", "bag", "box", "door"],
+    "aliases": {"fridge": "refrigerator", "tv": "television", "couch": "sofa", "trash can": "bin", "bookshelf": "shelf"},
+    "box_threshold": 0.35,
+    "text_threshold": 0.25,
+    "max_detections_per_frame": 80,
+    "duplicate_mask_iou": 0.85
+  },
+  "segmentation": {"mask_threshold": 0.5, "overlap_warning_fraction": 0.25},
+  "appearance": {"background_rgb": [127, 127, 127]},
+  "geometry": {"min_points": 20, "min_mask_pixels": 16, "voxel_multiplier": 2.0, "min_extent_voxels": 2.0},
+  "association": {"appearance_similarity": 0.80, "overlap_fraction": 0.15, "reprojection_fraction": 0.65, "contradiction_fraction": 0.4, "depth_margin_voxels": 3.0, "candidate_extent_multiplier": 1.5, "max_pair_points": 512},
+  "viewer": {"max_object_points": 50000}
+}

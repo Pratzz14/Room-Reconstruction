@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Room reconstruction · object inspection</title>
+  <style>
+    :root { color-scheme:dark; font:14px/1.45 system-ui,sans-serif; background:#101318; color:#e8eaed }
+    * { box-sizing:border-box } body { margin:0; height:100dvh; display:flex; flex-direction:column }
+    header { padding:14px 20px; display:flex; justify-content:space-between; align-items:center; gap:14px }
+    h1 { font-size:19px; margin:0; font-weight:600 } .subtitle { color:#aeb8c6; font-size:12px }
+    button,select,input { font:inherit } button,select { background:#282f3a; color:inherit; border:1px solid #4f5c6c; border-radius:5px; padding:7px 10px }
+    button { cursor:pointer } button:hover { background:#364254 } button:disabled { cursor:default; opacity:.45 }
+    button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline:2px solid #78bcff; outline-offset:2px }
+    label { display:inline-flex; align-items:center; gap:6px } #status { padding:0 20px 10px; font-size:12px; color:#b2c3d5; min-height:26px } #status.error { color:#ffb2a8 }
+    main { display:grid; grid-template-columns:320px minmax(0,1fr); flex:1; min-height:0; gap:12px; padding:0 12px 12px }
+    .panel { min-width:0; min-height:0; border:1px solid #303846; border-radius:7px; background:#07090c; overflow:hidden }
+    .object-panel { display:flex; flex-direction:column; overflow:auto; background:#161c24; padding:16px; gap:12px; font-size:12px }
+    h2 { font-size:14px; font-weight:600; margin:0 } .object-panel input[type=search],.object-panel select { width:100%; min-width:0 }
+    .object-panel input[type=search] { color:inherit; background:#10151d; border:1px solid #4f5c6c; padding:8px; border-radius:5px }
+    #object-list { flex:none; height:200px; padding:4px } #object-list option { padding:7px 4px }
+    .object-panel label { display:flex; flex-wrap:wrap } .actions { display:flex; flex-wrap:wrap; gap:7px }
+    #object-details,#object-note,#evidence-caption { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; color:#c3cfde }
+    .object-panel a { color:#91d9ec } details { border-top:1px solid #303846; padding-top:12px } summary { cursor:pointer; font-size:13px }
+    .evidence-controls { display:flex; flex-direction:column; gap:10px; padding-top:12px }
+    #evidence-image,#crop-image { width:100%; height:auto; display:block; border-radius:4px }
+    .scene-panel { display:flex; flex-direction:column } .scene-heading { display:flex; align-items:center; flex-wrap:wrap; gap:14px; padding:10px 14px; background:#1b2028 }
+    .scene-controls { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:10px 14px; background:#171c24; font-size:12px }
+    .scene-controls input[type=range] { width:85px; accent-color:#78bcff } #fit { background:#284766; border-color:#5783ac }
+    #scene-view { position:relative; flex:1; min-height:0 } #scene { position:absolute; top:0; left:0; border:0; background:#07090c; transform-origin:top left }
+    #empty { position:absolute; bottom:16px; left:14px; right:14px; padding:10px; background:#171c24e6; border-radius:4px; pointer-events:none; font-size:12px }
+    footer { padding:0 16px 10px; font-size:11px; color:#9ba8b8 } [hidden] { display:none!important }
+    @media(max-width:760px) { body { height:auto; min-height:100dvh } header { align-items:flex-start; padding:12px } main { grid-template-columns:1fr; flex:none } .object-panel { max-height:75dvh } .scene-panel { height:70dvh; min-height:400px } .subtitle { max-width:220px } #status { padding-inline:12px } }
+  </style>
+</head>
+<body>
+  <header><div><h1>Object inspection</h1><div class="subtitle">Browse objects in the complete saved reconstruction</div></div>
+    <label>Capture <select id="capture" aria-label="Capture"></select></label></header>
+  <div id="status" role="status" aria-live="polite">Connecting to the room view…</div>
+  <main>
+    <aside class="panel object-panel" aria-label="Object inspection">
+      <h2>Objects</h2><div id="object-status" role="status">Loading object inventory…</div>
+      <input id="object-search" type="search" placeholder="Search ID or label" aria-label="Search objects">
+      <select id="object-list" size="7" aria-label="Objects in selected capture"></select>
+      <div class="actions"><button id="object-focus" disabled>Focus object</button><button id="object-clear">Clear</button></div>
+      <label><input id="object-isolate" type="checkbox" disabled>Isolate object</label>
+      <label><input id="object-centroid" type="checkbox" checked>Show centroid</label>
+      <label><input id="object-bounds" type="checkbox" checked>Show bounds</label>
+      <label><input id="object-crop" type="checkbox">Apply ceiling crop to selection</label>
+      <p id="object-note">Choose an object to inspect its segmented points.</p><p id="object-details"></p>
+      <details id="evidence-section"><summary>Image evidence</summary><div class="evidence-controls">
+        <label>Supporting frame <select id="object-evidence" aria-label="Object supporting frame"><option value="">Choose an object</option></select></label>
+        <label>Unresolved 2D observations <select id="unresolved-list" aria-label="Unresolved observations"><option value="">None selected</option></select></label>
+        <p id="evidence-caption"></p>
+        <a id="evidence-link" target="_blank" rel="noopener" hidden><img id="evidence-image" alt="Source frame with selected object mask"></a>
+        <img id="crop-image" alt="Close-up of selected masked object" hidden>
+        <a id="original-link" target="_blank" rel="noopener" hidden>Open original frame</a>
+      </div></details>
+    </aside>
+    <section class="panel scene-panel" aria-label="3D reconstruction">
+      <div class="scene-heading"><h2>Room</h2><span class="subtitle">Drag to orbit · scroll to zoom</span></div>
+      <div class="scene-controls">
+        <button id="fit">Fit room</button><label><input type="checkbox" id="path" checked>Camera path</label>
+        <label>Point size <input type="range" id="size" min="0.0005" max="0.02" step="0.0005" value="0.003"></label>
+        <label><input type="checkbox" id="crop">Hide ceiling</label>
+        <label id="direction-label" hidden>Direction <select id="direction" aria-label="Ceiling direction"><option>-Y</option><option>+Y</option><option>-X</option><option>+X</option><option>-Z</option><option>+Z</option></select></label>
+        <label id="percent-label" hidden>Crop <input type="range" id="percent" min="0" max="100" value="15" aria-label="Ceiling crop percent"><span id="percent-value">15%</span></label>
+      </div>
+      <div id="scene-view"><iframe id="scene" src="http://127.0.0.1:__SCENE_PORT__/" title="3D room reconstruction"></iframe><div id="empty" hidden></div></div>
+    </section>
+  </main>
+  <footer>Complete saved geometry · relative units · Before and After use independent coordinate frames</footer>
+  <script>
+    const $ = id=>document.getElementById(id), capture=$('capture');
+    let config=null, session=null, sequence=0, ready=false, busy=false, desired=null, pendingAction={}, fitPending=false, fatal=false, inventoryRequest=0;
+    let data={objects:[],observations:[],unresolved:[]}, selectedId='';
+    const perCapture={};
+    new ResizeObserver(([entry])=>{const {width,height}=entry.contentRect;if(!width||!height)return;const scale=Math.min(1,width/640);$('scene').style.width=(width/scale)+'px';$('scene').style.height=(height/scale)+'px';$('scene').style.transform=`scale(${scale})`;}).observe($('scene-view'));
+    function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);}
+    async function post(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok){const e=new Error(result.error||response.statusText);e.code=response.status;throw e;}return result;}
+    function settings(){return {show_path:$('path').checked,point_size:+$('size').value,crop_enabled:$('crop').checked,crop_direction:$('direction').value,crop_percent:+$('percent').value};}
+    function cropLabels(){$('direction-label').hidden=$('percent-label').hidden=!$('crop').checked;$('percent-value').textContent=$('percent').value+'%';}
+    function showSettings(s){$('path').checked=s.show_path;$('size').value=s.point_size;$('crop').checked=s.crop_enabled;$('direction').value=s.crop_direction;$('percent').value=s.crop_percent;cropLabels();}
+    function clearEvidence(){for(const id of ['evidence-link','crop-image','original-link'])$(id).hidden=true;$('evidence-caption').textContent='';}
+    function filterObjects(){const query=$('object-search').value.toLowerCase();$('object-list').replaceChildren();for(const o of data.objects.filter(o=>(o.id+' '+o.label).toLowerCase().includes(query)))$('object-list').add(new Option(o.label+' · '+o.id,o.id));$('object-list').value=selectedId;}
+    function clearPanel(){selectedId='';$('object-list').value='';$('object-details').textContent='';$('object-note').textContent='Choose an object to inspect its segmented points.';$('object-isolate').checked=false;$('object-focus').disabled=$('object-isolate').disabled=true;$('object-evidence').dataset.object='';$('object-evidence').replaceChildren(new Option('Choose an object',''));clearEvidence();}
+    async function loadObjects(){const token=++inventoryRequest,name=capture.value;data={objects:[],observations:[],unresolved:[]};$('object-search').value='';clearPanel();filterObjects();$('unresolved-list').replaceChildren(new Option('None selected',''));$('object-status').textContent='Loading object inventory…';try{const response=await fetch('/objects/'+name);if(!response.ok)throw new Error('Object inventory unavailable');const result=await response.json();if(token!==inventoryRequest||name!==capture.value)return;data={observations:[],...result};filterObjects();$('object-status').textContent=`${result.synthetic?'SYNTHETIC FIXTURE · ':''}${result.objects.length} objects · ${result.unresolved.length} unresolved observations · ${result.status}`;for(const o of result.unresolved)$('unresolved-list').add(new Option(o.label+' · frame '+o.frame_index,o.id));}catch(e){if(token===inventoryRequest)$('object-status').textContent=e.message;}}
+    function render(s){const inspection=s.inspection,obj=inspection&&inspection.selected;$('object-focus').disabled=$('object-isolate').disabled=!obj||!ready;$('object-isolate').checked=!!(inspection&&inspection.isolate);if(obj){selectedId=obj.id;$('object-note').textContent=inspection.visible_points?'Full saved object · '+(inspection.crop_selection?'ceiling crop applied':'ceiling crop bypassed'):'No selected points remain after clipping.';$('object-details').textContent=`${obj.id}\n${obj.label} · ${obj.supporting_frames} supporting frames\n${obj.coordinate_frame} · relative units\nCentroid: ${obj.centroid.map(x=>x.toFixed(4)).join(', ')}\n${obj.point_count.toLocaleString()} saved points\n${obj.quality.join(', ')}`;if($('object-evidence').dataset.object!==obj.id){$('object-evidence').dataset.object=obj.id;$('object-evidence').replaceChildren(new Option('Select a supporting frame',''));for(const id of obj.observation_ids){const o=data.observations.find(x=>x.id===id);if(o)$('object-evidence').add(new Option(`${o.timestamp_sec.toFixed(2)}s · frame ${o.frame_index}`,id));}}}else{$('object-details').textContent='';}const isolated=inspection&&inspection.isolate;message(`${capture.value==='before'?'Before':'After'} · ${isolated?inspection.visible_points.toLocaleString()+' selected points':s.display_points.toLocaleString()+' room points shown'} · full capture`);$('empty').hidden=!s.empty_crop||!!(inspection&&inspection.visible_points);$('empty').textContent='No points remain after this ceiling crop. Reduce the crop or disable Hide ceiling.';}
+    function request(action=null){if(!config||fatal)return;if(action){pendingAction={...pendingAction,...action};if(action.clear)delete pendingAction.select;if(action.select)delete pendingAction.clear;}desired={capture:capture.value,settings:settings(),session,sequence:++sequence};drain();}
+    async function drain(){if(busy||!desired||!ready||fatal)return;const payload=desired;desired=null;payload.fit=fitPending;fitPending=false;if(Object.keys(pendingAction).length){payload.object_action=pendingAction;pendingAction={};}busy=true;try{const result=await post('/inspect',payload);if(payload.sequence===sequence&&payload.capture===capture.value)render(result);}catch(e){message(e.message,true);if(e.code===409)fatal=true;}finally{busy=false;if(desired)drain();}}
+    function loadCapture(){pendingAction={};desired=null;showSettings(perCapture[capture.value]);loadObjects();fitPending=true;request();}
+    function showEvidence(id){clearEvidence();if(!id)return;const o=data.observations.find(x=>x.id===id)||data.unresolved.find(x=>x.id===id);if(!o)return;const prefix='/evidence/'+capture.value+'/'+encodeURIComponent(id)+'/';$('evidence-image').src=prefix+'overlay';$('evidence-link').href=prefix+'overlay';$('evidence-link').hidden=false;$('crop-image').src=prefix+'crop';$('crop-image').hidden=false;$('original-link').href=prefix+'original';$('original-link').hidden=false;$('evidence-caption').textContent=`${o.frame_id}\n${o.timestamp_sec.toFixed(3)}s · ${o.label}${o.status==='unresolved'?' · insufficient usable 3D support':''}`;}
+    capture.onchange=loadCapture;$('object-search').oninput=filterObjects;
+    $('object-list').onchange=()=>{const id=$('object-list').value;if(!id)return;selectedId=id;clearEvidence();$('object-evidence').dataset.object='';$('unresolved-list').value='';request({select:id});};
+    $('object-clear').onclick=()=>{clearPanel();request({clear:true});};$('object-focus').onclick=()=>request({focus:true});
+    for(const id of ['object-isolate','object-centroid','object-bounds','object-crop'])$(id).onchange=()=>request({options:{mode:'full',isolate:$('object-isolate').checked,show_centroid:$('object-centroid').checked,show_bounds:$('object-bounds').checked,crop_selection:$('object-crop').checked}});
+    $('object-evidence').onchange=()=>showEvidence($('object-evidence').value);
+    $('unresolved-list').onchange=()=>{const id=$('unresolved-list').value;clearPanel();request({clear:true});showEvidence(id);};
+    $('fit').onclick=()=>{fitPending=true;request();};for(const id of ['path','size','crop','direction','percent'])$(id).addEventListener('input',()=>{cropLabels();perCapture[capture.value]=settings();request();});
+    async function poll(){try{const response=await fetch('/status');if(!response.ok)throw new Error('Room server unavailable');const s=await response.json(),wasReady=ready;ready=s.ready;if(!ready)message('Connecting to the room view…');else if(!wasReady){fitPending=true;request();}drain();}catch(e){ready=false;message('Room connection lost. Reconnecting…',true);}setTimeout(poll,750);}
+    (async()=>{try{config=await post('/session',{});session=config.session;for(const name of config.captures){capture.add(new Option(name==='before'?'Before':'After',name));perCapture[name]={...config.settings[name]};}capture.value=config.initial;loadCapture();poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "status": "unresolved",
+  "models": {
+    "detector": {"repository": "IDEA-Research/grounding-dino-tiny", "revision": "main"},
+    "segmenter": {"repository": "facebook/sam2.1-hiera-tiny", "revision": "main"},
+    "appearance": {"repository": "facebook/dinov2-small", "revision": "main"}
+  },
+  "note": "Run objects.py resolve-models in the isolated GPU environment to freeze revisions and content hashes before inference."
+}

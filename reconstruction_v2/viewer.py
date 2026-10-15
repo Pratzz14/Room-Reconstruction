@@ -24,7 +24,7 @@ def ceiling_crop_indices(points, direction="-Y", percent=15):
     return indices[heights <= high - (high - low) * percent / 100]
 
 
-def view(root, port=8090):
+def view(root, port=8090, objects=None):
     import viser
     root = Path(root).resolve()
     manifest = read_json(root / "run_manifest.json")
@@ -54,6 +54,22 @@ def view(root, port=8090):
     panel_image = server.gui.add_image(np.zeros((8, 8, 3), np.uint8), label="RGB / depth / confidence")
     state = {"handles": [], "camera_handles": [], "labels": {}, "busy": False,
              "ceiling_settings": {name: {"enabled": False, "direction": "-Y", "percent": 15} for name in available}}
+    object_panel = None
+
+    def context_visibility(isolated):
+        if "cloud_handle" in state:
+            state["cloud_handle"].visible = not isolated
+        for handle in state["camera_handles"]:
+            handle.visible = camera_visibility.value and not isolated
+
+    if objects:
+        from .object_contracts import ObjectInventory
+        from .object_inspection import SavedObjectPanel
+        object_panel = SavedObjectPanel(server, ObjectInventory(root, objects), context_visibility,
+            lambda: {"crop_enabled": hide_ceiling.value, "crop_direction": ceiling_direction.value, "crop_percent": ceiling_amount.value},
+            lambda: state["points"], lambda: point_size.value)
+    else:
+        server.gui.add_markdown("Object inventory unavailable. Supply --objects after object processing to inspect IDs and masks.")
 
     def load_image(path):
         with Image.open(path) as image:
@@ -141,6 +157,8 @@ def view(root, port=8090):
             point_id.value = 0
             evidence.content = "Choose a saved point ID to inspect source evidence."
             show_frame(0)
+            if object_panel:
+                object_panel.capture(name)
             focus_cloud()
         finally:
             state["busy"] = False
@@ -156,14 +174,15 @@ def view(root, port=8090):
 
     @camera_visibility.on_update
     def _cameras(event):
-        for handle in state["camera_handles"]:
-            handle.visible = camera_visibility.value
+        context_visibility(bool(object_panel and object_panel.inspection.isolate))
         camera_state.content = "Camera display: " + ("shown" if camera_visibility.value else "hidden")
 
     @point_size.on_update
     def _size(event):
         if "cloud_handle" in state:
             state["cloud_handle"].point_size = point_size.value
+        if object_panel:
+            object_panel.refresh()
 
     @hide_ceiling.on_update
     @ceiling_direction.on_update
@@ -176,6 +195,8 @@ def view(root, port=8090):
                                                    "direction": ceiling_direction.value,
                                                    "percent": ceiling_amount.value}
         refresh_cloud()
+        if object_panel:
+            object_panel.refresh()
 
     @focus.on_click
     def _focus(event):

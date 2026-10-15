@@ -30,12 +30,16 @@ DEFAULT_SETTINGS = {"show_path": True, "point_size": 0.003, "crop_enabled": Fals
 
 
 class _SyncState:
-    def __init__(self, root, captures, maximum=200000):
+    def __init__(self, root, captures, maximum=200000, inventory=None, static=False):
         self.root, self.captures = Path(root), captures
         self.capture, self.playback_time, self.end = captures[0], 0.0, -1
         self.lock = threading.RLock()
         self.server = self.scene = None
         self.timeline = {name: load_timeline(root, name) for name in captures}
+        self.static = static
+        if static:
+            self.end = len(self.timeline[self.capture].frames) - 1
+            self.playback_time = self.timeline[self.capture].timestamps[-1]
         self.points, self.colors, self.observation_frames, self.cameras = {}, {}, {}, {}
         self.groups, self.camera_handles, self.path_handles = {}, {}, {}
         self.display_indices, self.bounds, self.clients = {}, {}, {}
@@ -44,6 +48,9 @@ class _SyncState:
         if self.maximum < 1:
             raise ValueError("Display point limit must be positive")
         self.session, self.sequence, self.geometry_updates = None, -1, 0
+        from .object_inspection import ObjectInspection
+        self.inspection = ObjectInspection(inventory) if inventory is not None else None
+        self.object_refresh_key = None
 
     def atomic(self):
         return self.server.atomic() if self.server else nullcontext()
@@ -53,11 +60,13 @@ class _SyncState:
             self.session, self.sequence = secrets.token_urlsafe(24), -1
             return {"session": self.session, "captures": self.captures, "initial": self.captures[0],
                     "timestamps": {n: list(t.timestamps) for n, t in self.timeline.items()},
-                    "settings": self.settings, "maximum_points": self.maximum}
+                    "settings": self.settings, "maximum_points": self.maximum,
+                    "objects_available": self.inspection is not None,
+                    "view_mode": "objects" if self.static else "playback"}
 
     def snapshot(self):
         with self.lock:
-            end = self.timeline[self.capture].frame_index(self.playback_time)
+            end = len(self.timeline[self.capture].frames) - 1 if self.static else self.timeline[self.capture].frame_index(self.playback_time)
             indices = self.display_indices.get(self.capture, np.array([], dtype=int))
             first = self.observation_frames.get(self.capture, np.array([], dtype=int))
             return {"capture": self.capture, "time": self.playback_time, "sequence": self.sequence,
@@ -68,17 +77,24 @@ class _SyncState:
                     "ready": bool(self.clients) and all(c["framed"] for c in self.clients.values()),
                     "geometry_updates": self.geometry_updates,
                     "settings": self.settings[self.capture],
+                    "inspection": self.inspection.snapshot() if self.inspection else None,
                     "cameras": [{"id": key, "manual": c["manual"], "aspect": c["aspect"],
                                  "position": list(c["client"].camera.position),
                                  "look_at": list(c["client"].camera.look_at)} for key, c in self.clients.items()]}
 
     def load(self, server):
         self.server, self.scene = server, server.scene
+        if self.inspection:
+            self.inspection.scene = server.scene
+            self.inspection.clear(self.capture)
         for name in self.captures:
             with np.load(self.root / name / "cloud.npz", allow_pickle=False) as data:
                 self.points[name], self.colors[name] = data["points"], data["colors"]
-            with np.load(self.root / name / "observations.npz", allow_pickle=False) as data:
-                self.observation_frames[name] = first_observation_frames(data, len(self.points[name]))
+            if self.static:
+                self.observation_frames[name] = np.zeros(len(self.points[name]), dtype=np.int32)
+            else:
+                with np.load(self.root / name / "observations.npz", allow_pickle=False) as data:
+                    self.observation_frames[name] = first_observation_frames(data, len(self.points[name]))
             self.cameras[name] = read_json(self.root / name / "cameras.json")
             self._build_groups(name)
             self._build_cameras(name)
@@ -97,7 +113,7 @@ class _SyncState:
         self.display_indices[capture] = indices
         self.groups[capture] = []
         first = self.observation_frames[capture]
-        for frame in range(len(self.timeline[capture].frames)):
+        for frame in (range(1) if self.static else range(len(self.timeline[capture].frames))):
             selected = indices[first[indices] == frame]
             if not len(selected):
                 continue
@@ -132,21 +148,27 @@ class _SyncState:
                     thickness=2, thickness_units="screen", visible=False))
 
     def _visibility(self):
+        isolated = self.inspection is not None and self.inspection.isolate
         for name in self.captures:
-            active = name == self.capture
+            active = name == self.capture and not isolated
             for frame, handle, _ in self.groups.get(name, []):
                 handle.visible = active and frame <= self.end
             show = active and self.settings[name]["show_path"]
             for index, handle in enumerate(self.camera_handles.get(name, [])):
-                handle.visible = show and index == self.end
+                handle.visible = show and (self.static or index == self.end)
             for index, handle in enumerate(self.path_handles.get(name, []), 1):
-                handle.visible = show and index <= self.end
+                handle.visible = show and (self.static or index <= self.end)
 
     def fit(self, client=None):
         for record in list(self.clients.values()):
             if client is not None and record["client"] != client:
                 continue
             camera = record["client"].camera
+            if self.inspection and self.inspection.focus_active and self.inspection.selected:
+                fitted = self.inspection.fit(record["client"])
+                if fitted is not None:
+                    record.update(manual=False, aspect=camera.aspect, fitted=fitted, awaiting_fit=True)
+                continue
             fitted = fit_room(self.bounds.get(self.capture), camera.aspect)
             if fitted is None:
                 record["framed"] = True  # An explicitly empty crop still permits changing controls.
@@ -201,9 +223,11 @@ class _SyncState:
         with self.lock:
             self.clients.pop(client.client_id, None)
 
-    def update(self, capture, playback_time, sequence=None, session=None, settings=None, fit=False):
+    def update(self, capture, playback_time, sequence=None, session=None, settings=None, fit=False, object_action=None):
         if capture not in self.captures:
             raise ValueError(f"Unknown capture: {capture}")
+        if self.static:
+            playback_time = self.timeline[capture].timestamps[-1]
         end = self.timeline[capture].frame_index(float(playback_time))
         if sequence is not None and (type(sequence) is not int or sequence < 0):
             raise ValueError("Sequence must be a non-negative integer")
@@ -214,6 +238,19 @@ class _SyncState:
                 raise PermissionError("Another page controls this viewer. Reload to take control.")
             if sequence is not None and sequence <= self.sequence:
                 return {**self.snapshot(), "stale": True}
+            if object_action is not None:
+                if (not self.inspection or not isinstance(object_action, dict)
+                        or set(object_action) - {"select", "clear", "options", "focus"}):
+                    raise ValueError("Object inspection is unavailable or action is invalid")
+                if "select" in object_action:
+                    self.inspection.inventory.object(capture, object_action["select"])
+                for key in ("clear", "focus"):
+                    if key in object_action and type(object_action[key]) is not bool:
+                        raise ValueError("Object action must be boolean")
+                if "options" in object_action and not isinstance(object_action["options"], dict):
+                    raise ValueError("Invalid object display options")
+                if self.static and object_action.get("options", {}).get("mode", "full") != "full":
+                    raise ValueError("Object inspection always shows full saved geometry")
             chosen = dict(self.settings[capture])
             if settings is not None:
                 if not isinstance(settings, dict) or set(settings) - set(DEFAULT_SETTINGS):
@@ -232,6 +269,18 @@ class _SyncState:
             visibility = changed or self.end != end or chosen["show_path"] != previous["show_path"]
             self.capture, self.playback_time, self.end = capture, float(playback_time), end
             self.settings[capture] = chosen
+            if self.inspection:
+                if changed:
+                    self.inspection.clear(capture)
+                if object_action:
+                    if object_action.get("clear"):
+                        self.inspection.clear(capture)
+                    if "select" in object_action:
+                        self.inspection.select(capture, object_action["select"])
+                    if "options" in object_action:
+                        self.inspection.options(object_action["options"])
+                if fit:
+                    self.inspection.focus_active = False
             if sequence is not None:
                 self.sequence = sequence
             if self.scene is not None:
@@ -243,13 +292,29 @@ class _SyncState:
                             handle.point_size = chosen["point_size"]
                     if visibility or cropped:
                         self._visibility()
+                    if self.inspection:
+                        import json as _json
+                        key = (capture, end, self.inspection.identifier, _json.dumps(chosen, sort_keys=True),
+                               _json.dumps(self.inspection.snapshot(), sort_keys=True, default=str))
+                        if key != self.object_refresh_key:
+                            from .object_inspection import crop_plane
+                            self.inspection.refresh(end, {**chosen, "plane": crop_plane(self.points[capture], chosen)}, chosen["point_size"])
+                            # Store the post-refresh state so visible-count updates do not trigger an extra rebuild.
+                            self.object_refresh_key = (capture, end, self.inspection.identifier, _json.dumps(chosen, sort_keys=True),
+                                                       _json.dumps(self.inspection.snapshot(), sort_keys=True, default=str))
+                        self._visibility()
                 if changed or cropped or fit:
+                    self.fit()
+                if object_action and object_action.get("focus"):
+                    if not self.inspection.selected:
+                        raise ValueError("Select an object before focusing")
+                    self.inspection.focus_active = True
                     self.fit()
             return self.snapshot()
 
 
-def make_handler(state, videos, media_records, scene_port):
-    page = (Path(__file__).parent / "sync.html").read_bytes().replace(b"__SCENE_PORT__", str(scene_port).encode())
+def make_handler(state, videos, media_records, scene_port, page_name="sync.html"):
+    page = (Path(__file__).parent / page_name).read_bytes().replace(b"__SCENE_PORT__", str(scene_port).encode())
 
     class Handler(BaseHTTPRequestHandler):
         def json_response(self, value, status=200):
@@ -280,6 +345,28 @@ def make_handler(state, videos, media_records, scene_port):
                         self.wfile.write(page)
                 elif path == "/status" and not head:
                     self.json_response(state.snapshot())
+                elif path.startswith("/objects/") and not head:
+                    capture = path.removeprefix("/objects/")
+                    if capture not in state.captures:
+                        self.send_error(404)
+                        return
+                    self.json_response(state.inspection.inventory.listing(capture) if state.inspection else
+                                       {"objects": [], "unresolved": [], "status": "unavailable"})
+                elif path.startswith("/evidence/") and not head:
+                    parts = path.strip("/").split("/")
+                    if len(parts) != 4 or not state.inspection:
+                        self.send_error(404)
+                        return
+                    try:
+                        data = state.inspection.evidence(parts[1], parts[2], parts[3])
+                    except (ValueError, KeyError):
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                 elif path.startswith("/video/"):
                     name = path.removeprefix("/video/")
                     if name not in videos:
@@ -331,12 +418,12 @@ def make_handler(state, videos, media_records, scene_port):
                     raise TypeError("Expected JSON object")
                 if path == "/session":
                     self.json_response({**state.begin_session(), "media": media_records})
-                elif path == "/sync":
+                elif path == "/sync" or (path == "/inspect" and state.static):
                     if not isinstance(payload.get("session"), str) or type(payload.get("sequence")) is not int:
                         raise ValueError("Session and sequence are required")
                     started = time.perf_counter()
-                    result = state.update(payload["capture"], payload["time"], payload["sequence"],
-                                          payload["session"], payload.get("settings"), payload.get("fit", False))
+                    result = state.update(payload["capture"], payload.get("time", 0) if state.static else payload["time"], payload["sequence"],
+                                          payload["session"], payload.get("settings"), payload.get("fit", False), payload.get("object_action"))
                     self.json_response({**result, "server_ms": (time.perf_counter() - started) * 1000})
                 else:
                     self.send_error(404)
@@ -353,10 +440,7 @@ def make_handler(state, videos, media_records, scene_port):
     return Handler
 
 
-def synchronized_view(root, port=8092, before_video=None, after_video=None):
-    import viser
-
-    root = Path(root).resolve()
+def check_viewer_ports(port):
     if not 1 <= port <= 65534:
         raise ValueError("Choose a port between 1 and 65534 (the scene uses the next port)")
     # Viser otherwise silently chooses a new port, breaking the embedded page.
@@ -373,6 +457,11 @@ def synchronized_view(root, port=8092, before_video=None, after_video=None):
     finally:
         for probe in sockets:
             probe.close()
+
+
+def synchronized_view(root, port=8092, before_video=None, after_video=None, objects=None):
+    root = Path(root).resolve()
+    check_viewer_ports(port)
     manifest = read_json(root / "run_manifest.json")
     captures = [name for name in ("before", "after") if manifest["captures"][name]["status"] == "completed"]
     if not captures:
@@ -386,7 +475,15 @@ def synchronized_view(root, port=8092, before_video=None, after_video=None):
         source_hash = read_json(root / name / "source.json")["source_video_sha256"]
         videos[name], media[name] = prepare_playback(source, source_hash, root.parent / "sync_cache")
     maximum = read_json(root / "config.json").get("viewer", {}).get("max_points", 200000)
-    state = _SyncState(root, captures, maximum)
+    from .object_contracts import ObjectInventory
+    inventory = ObjectInventory(root, objects) if objects else None
+    state = _SyncState(root, captures, maximum, inventory)
+    serve_viewer(state, port, videos, media)
+
+
+def serve_viewer(state, port, videos=None, media=None, page_name="sync.html", title="Synchronized viewer"):
+    import viser
+
     scene_server, http = None, None
     try:
         scene_server = viser.ViserServer(host="127.0.0.1", port=port + 1)
@@ -399,11 +496,11 @@ def synchronized_view(root, port=8092, before_video=None, after_video=None):
         state.load(scene_server)
         scene_server.on_client_connect(state.connect)
         scene_server.on_client_disconnect(state.disconnect)
-        http = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state, videos, media, port + 1))
-        print(f"Synchronized viewer: http://127.0.0.1:{port} (Ctrl+C to stop)", flush=True)
+        http = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state, videos or {}, media or {}, port + 1, page_name))
+        print(f"{title}: http://127.0.0.1:{port} (Ctrl+C to stop)", flush=True)
         http.serve_forever()
     except KeyboardInterrupt:
-        print("Stopping synchronized viewer.", flush=True)
+        print(f"Stopping {title.lower()}.", flush=True)
     finally:
         if http:
             http.server_close()

@@ -14,7 +14,7 @@
     .toolbar { padding:8px 18px; display:flex; align-items:center; flex-wrap:wrap; gap:10px; background:#1b2028; border-block:1px solid #303846 }
     #seek { flex:1; min-width:120px; accent-color:#78bcff } #clock { font-variant-numeric:tabular-nums; min-width:105px }
     #status { padding:6px 18px; font-size:12px; color:#b2c3d5; min-height:30px } #status.error { color:#ffb2a8 }
-    main { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); flex:1; min-height:0; gap:10px; padding:0 10px 10px }
+    main { display:grid; grid-template-columns:270px minmax(0,1fr) minmax(0,1fr); flex:1; min-height:0; gap:10px; padding:0 10px 10px }
     .panel { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid #303846; border-radius:7px; background:#07090c }
     h2 { font-size:13px; font-weight:500; margin:0; padding:9px 12px; background:#1b2028 }
     .view { position:relative; flex:1; min-height:0 } video,iframe { width:100%; height:100%; border:0; display:block; background:#07090c } video { object-fit:contain }
@@ -23,7 +23,15 @@
     .scene-controls input[type=range] { width:70px; accent-color:#78bcff } #fit { background:#284766; border-color:#5783ac }
     #empty { position:absolute; bottom:15px; left:12px; right:12px; padding:8px; background:#171c24e6; border-radius:4px; pointer-events:none; font-size:12px }
     footer { padding:0 14px 8px; font-size:11px; color:#9ba8b8 } [hidden] { display:none!important }
-    @media(max-width:760px) { body { height:auto; min-height:100dvh } header { align-items:flex-start } main { grid-template-columns:1fr; flex:none } .panel { height:440px } #clock { min-width:auto } .subtitle { max-width:260px } }
+    .object-panel { overflow:auto; background:#161c24; padding:12px; gap:10px; font-size:12px }
+    .object-panel h2 { padding:0; background:none; font-size:14px } .object-panel input[type=search], .object-panel select { width:100%; min-width:0 }
+    .object-panel input[type=search] { color:inherit; background:#10151d; border:1px solid #4f5c6c; padding:7px; border-radius:5px }
+    .object-panel select[size] { padding:3px; min-height:120px } .object-panel option { padding:6px 3px }
+    .object-panel label { display:flex; flex-wrap:wrap } .object-panel .actions { display:flex; gap:6px; flex-wrap:wrap }
+    #object-details,#object-note,#evidence-caption { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; color:#c3cfde }
+    #evidence-image,#crop-image { width:100%; height:auto; display:block; border-radius:4px } .object-panel a { color:#91d9ec }
+    @media(max-width:1050px) { main { grid-template-columns:230px minmax(0,1fr); grid-template-rows:1fr 1fr } .object-panel { grid-row:1/3 } }
+    @media(max-width:760px) { body { height:auto; min-height:100dvh } header { align-items:flex-start } main { grid-template-columns:1fr; grid-template-rows:auto; flex:none } .panel { height:440px } .object-panel { grid-row:auto; height:auto; max-height:none } #clock { min-width:auto } .subtitle { max-width:260px } }
   </style>
 </head>
 <body>
@@ -36,6 +44,24 @@
   </div>
   <div id="status" role="status" aria-live="polite">Connecting to the room view…</div>
   <main>
+    <aside class="panel object-panel" aria-label="Object inspection">
+      <h2>Objects</h2><div id="object-status" role="status">Loading object inventory…</div>
+      <input id="object-search" type="search" placeholder="Search ID or label" aria-label="Search objects">
+      <select id="object-list" size="6" aria-label="Objects in selected capture"></select>
+      <div class="actions"><button id="object-focus" disabled>Focus object</button><button id="object-clear">Clear</button></div>
+      <label><input id="object-isolate" type="checkbox" disabled>Isolate object</label>
+      <label>Geometry <select id="object-mode" aria-label="Object geometry mode"><option value="full">Full saved object</option><option value="playback">Follow playback</option></select></label>
+      <label><input id="object-centroid" type="checkbox" checked>Show centroid</label>
+      <label><input id="object-bounds" type="checkbox" checked>Show bounds</label>
+      <label><input id="object-crop" type="checkbox">Apply ceiling crop to selection</label>
+      <p id="object-note">Choose an object to inspect its segmented points.</p><p id="object-details"></p>
+      <label>Unresolved 2D observations <select id="unresolved-list" aria-label="Unresolved observations"><option value="">None selected</option></select></label>
+      <label>Supporting frame <select id="object-evidence" aria-label="Object supporting frame"><option value="">Choose an object</option></select></label>
+      <p id="evidence-caption"></p>
+      <a id="evidence-link" target="_blank" rel="noopener" hidden><img id="evidence-image" alt="Source frame with selected object mask"></a>
+      <img id="crop-image" alt="Close-up of selected masked object" hidden>
+      <a id="original-link" target="_blank" rel="noopener" hidden>Open original frame</a>
+    </aside>
     <section class="panel"><h2>Source video</h2><div class="view"><video id="video" playsinline preload="auto" aria-label="Source video"></video></div></section>
     <section class="panel"><h2>Room · drag to orbit, scroll to zoom</h2>
       <div class="scene-controls">
@@ -52,6 +78,56 @@
   <script>
     const $ = id => document.getElementById(id);
     const video = $('video'), capture = $('capture'), status = $('status');
+    let objectData={objects:[],unresolved:[],observations:[]}, objectPending={}, inventoryRequest=0;
+    function objectAction(action) { objectPending={...objectPending,...action}; if(action.clear) delete objectPending.select; if(action.select) delete objectPending.clear; requestSync(true); }
+    function filterObjects() {
+      const selected=$('object-list').value, query=$('object-search').value.toLowerCase();$('object-list').replaceChildren();
+      for(const obj of objectData.objects.filter(o=>(o.id+' '+o.label).toLowerCase().includes(query))) $('object-list').add(new Option(obj.label+' · '+obj.id,obj.id));
+      $('object-list').value=selected;
+    }
+    function clearEvidence() { for(const id of ['evidence-link','crop-image','original-link']) $(id).hidden=true; $('evidence-caption').textContent=''; }
+    async function loadObjects() {
+      const token=++inventoryRequest, name=capture.value;
+      objectData={objects:[],unresolved:[],observations:[]};$('object-search').value='';filterObjects();clearEvidence();
+      $('object-details').textContent='';$('object-note').textContent='Choose an object';$('object-focus').disabled=$('object-isolate').disabled=true;
+      $('object-isolate').checked=false;$('object-mode').value='full';$('object-evidence').replaceChildren(new Option('Choose an object',''));
+      $('unresolved-list').replaceChildren(new Option('None selected',''));
+      try {
+        const response=await fetch('/objects/'+name);if(!response.ok) throw new Error('Object inventory unavailable');const result=await response.json();
+        if(token!==inventoryRequest||name!==capture.value) return;
+        objectData={observations:[],...result};filterObjects();
+        $('object-status').textContent=result.status==='unavailable'?'No object inventory supplied. Open this viewer with --objects after processing.':`${result.synthetic?'SYNTHETIC FIXTURE · ':''}${result.objects.length} objects · ${result.unresolved.length} unresolved observations · ${result.status}`;
+        for(const o of result.unresolved) $('unresolved-list').add(new Option(o.label+' · frame '+o.frame_index,o.id));
+      } catch(e) {if(token===inventoryRequest) $('object-status').textContent=e.message;}
+    }
+    function renderInspection(s) {
+      const obj=s&&s.selected;$('object-focus').disabled=$('object-isolate').disabled=!obj;
+      $('object-isolate').checked=!!(s&&s.isolate);
+      if(!obj) { $('object-details').textContent='';$('object-note').textContent='Choose an object';return; }
+      $('object-note').textContent=s.note+(s.visible_points?'':'. No selected points are currently visible.');
+      $('object-details').textContent=`${obj.id}\n${obj.label} · ${obj.supporting_frames} supporting frames\n${obj.coordinate_frame} · relative units\nCentroid: ${obj.centroid.map(x=>x.toFixed(4)).join(', ')}\n${obj.point_count.toLocaleString()} saved points\n${obj.quality.join(', ')}`;
+      const evidence=$('object-evidence');
+      if(evidence.dataset.object!==obj.id) {
+        evidence.dataset.object=obj.id;evidence.replaceChildren(new Option('Select a supporting frame',''));
+        for(const id of obj.observation_ids) {const o=objectData.observations.find(x=>x.id===id);if(o) evidence.add(new Option(`${o.timestamp_sec.toFixed(2)}s · frame ${o.frame_index}`,id));}
+      }
+    }
+    function showEvidence(id) {
+      clearEvidence();if(!id) return;
+      const o=objectData.observations.find(x=>x.id===id)||objectData.unresolved.find(x=>x.id===id);if(!o) return;
+      video.pause();video.currentTime=o.timestamp_sec;requestSync(true,o.timestamp_sec);
+      const prefix='/evidence/'+capture.value+'/'+encodeURIComponent(id)+'/';
+      $('evidence-image').src=prefix+'overlay';$('evidence-link').href=prefix+'overlay';$('evidence-link').hidden=false;
+      $('crop-image').src=prefix+'crop';$('crop-image').hidden=false;$('original-link').href=prefix+'original';$('original-link').hidden=false;
+      $('evidence-caption').textContent=`${o.frame_id}\n${o.timestamp_sec.toFixed(3)}s · ${o.label}${o.status==='unresolved'?' · insufficient usable 3D support':''}`;
+    }
+    $('object-search').oninput=filterObjects;
+    $('object-list').onchange=()=>{if(!$('object-list').value)return;video.pause();clearEvidence();$('object-evidence').dataset.object='';$('unresolved-list').value='';$('object-mode').value='full';objectAction({select:$('object-list').value});};
+    $('object-clear').onclick=()=>{video.pause();$('object-list').value='';$('object-evidence').dataset.object='';$('object-evidence').replaceChildren(new Option('Choose an object',''));clearEvidence();objectAction({clear:true});};
+    $('object-focus').onclick=()=>objectAction({focus:true});
+    for(const id of ['object-isolate','object-mode','object-centroid','object-bounds','object-crop']) $(id).onchange=()=>objectAction({options:{isolate:$('object-isolate').checked,mode:$('object-mode').value,show_centroid:$('object-centroid').checked,show_bounds:$('object-bounds').checked,crop_selection:$('object-crop').checked}});
+    $('object-evidence').onchange=()=>showEvidence($('object-evidence').value);
+    $('unresolved-list').onchange=()=>{video.pause();$('object-list').value='';$('object-evidence').dataset.object='';$('object-evidence').replaceChildren(new Option('Choose an object',''));objectAction({clear:true});showEvidence($('unresolved-list').value);};
     let config, session, sequence=0, desired=null, busy=false, sceneReady=false, applied=false;
     let lastKey='', fitPending=false, fatal=false, timings=[];
     const perCapture={};
@@ -88,6 +164,7 @@
     async function drain() {
       if(busy||!desired||!sceneReady||fatal) return;
       const payload=desired; desired=null; payload.fit=fitPending; fitPending=false; busy=true;
+      if(Object.keys(objectPending).length) {payload.object_action=objectPending;objectPending={};}
       const start=performance.now();
       try {
         const result=await post('/sync',payload);
@@ -96,7 +173,8 @@
         if(payload.sequence===sequence&&payload.capture===capture.value) {
           applied=true;
           message(`${capture.value==='before'?'Before':'After'} · ${result.revealed_frames}/${result.frame_count} frames · ${result.visible_points.toLocaleString()} / ${result.display_points.toLocaleString()} display points`);
-          $('empty').hidden=result.visible_points>0;
+          renderInspection(result.inspection);
+          $('empty').hidden=result.visible_points>0||(result.inspection&&result.inspection.visible_points>0);
           $('empty').textContent=result.empty_crop?'No points remain after this ceiling crop. Reduce the crop or disable Hide ceiling.':'The room will appear as the video reaches the selected reconstruction frames.';
         }
       } catch(error) {
@@ -108,6 +186,7 @@
     function clock(t=video.currentTime) { $('clock').textContent=fmt(t)+' / '+fmt(video.duration); $('seek').value=t||0; }
     function loadCapture() {
       video.pause(); applied=false; fatal=false; desired=null; lastKey='';
+      objectPending={};loadObjects();
       showSettings(perCapture[capture.value]);
       video.src='/video/'+capture.value; video.load(); video.playbackRate=+$('speed').value;
       message('Loading '+capture.value+' video…'); $('empty').hidden=false;
