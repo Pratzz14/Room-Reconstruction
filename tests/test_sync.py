@@ -160,6 +160,9 @@ class CameraTests(unittest.TestCase):
                                      gui=SimpleNamespace(main_panel=SimpleNamespace(minimize=lambda: None)))
             state.connect(client)
             self.assertFalse(state.snapshot()["ready"])
+            inactive = SimpleNamespace(client_id=4, camera=Camera(), atomic=nullcontext, gui=client.gui)
+            state.connect(inactive)
+            self.assertFalse(state.snapshot()["ready"])
             original = np.array(client.camera.position)
             client.camera.position = (0, 0, 0)  # Delayed report from before the server fitted the room.
             client.camera.callback(client.camera)
@@ -167,6 +170,7 @@ class CameraTests(unittest.TestCase):
             client.camera.position = original
             client.camera.callback(client.camera)  # Acknowledge the fitted view.
             self.assertTrue(state.snapshot()["ready"])
+            self.assertFalse(state.clients[4]["framed"])
             client.camera.aspect = 0.3
             client.camera.callback(client.camera)
             self.assertGreater(np.linalg.norm(client.camera.position), np.linalg.norm(original))

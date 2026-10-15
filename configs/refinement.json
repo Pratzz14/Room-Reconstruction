@@ -1,0 +1,21 @@
+{
+  "version": "refinement-v1",
+  "model": "gemini-3.1-flash-lite",
+  "project_scope": "gemini-project-test",
+  "max_generation_attempts": 2,
+  "daily_generation_cap": 10,
+  "requests_per_minute": 15,
+  "input_tokens_per_minute": 250000,
+  "requests_per_day": 500,
+  "max_input_tokens": 125000,
+  "min_generation_interval_sec": 65,
+  "max_output_tokens": 24576,
+  "timeout_sec": 240,
+  "context_frames_per_capture": 8,
+  "detail_regions_per_capture": 6,
+  "label_review_regions_per_capture": 6,
+  "focus_categories": ["laptop", "drinking bottle", "oil bottle", "pressure cooker", "pan", "plate", "utensils", "food container"],
+  "crop_size": 256,
+  "geometry_overlap": 0.15,
+  "geometry_max_spread_extents": 1.5
+}

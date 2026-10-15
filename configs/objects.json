@@ -3,8 +3,8 @@
   "device": "cuda",
   "seed": 42,
   "detection": {
-    "vocabulary": ["chair", "refrigerator", "cabinet", "table", "sofa", "shelf", "monitor", "television", "lamp", "plant", "bin", "bag", "box", "door"],
-    "aliases": {"fridge": "refrigerator", "tv": "television", "couch": "sofa", "trash can": "bin", "bookshelf": "shelf"},
+    "vocabulary": ["chair", "refrigerator", "cabinet", "table", "sofa", "shelf", "monitor", "television", "lamp", "plant", "bin", "bag", "box", "door", "bed", "laptop", "water bottle", "oil bottle", "pressure cooker", "pot", "pan", "plate", "bowl", "spoon", "cooking utensil", "food container"],
+    "aliases": {"fridge": "refrigerator", "tv": "television", "couch": "sofa", "trash can": "bin", "bookshelf": "shelf", "notebook computer": "laptop", "frying pan": "pan", "cooker": "pressure cooker", "drinking bottle": "water bottle", "utensil": "cooking utensil"},
     "box_threshold": 0.35,
     "text_threshold": 0.25,
     "max_detections_per_frame": 80,

@@ -1,5 +1,6 @@
 """Shared scene/state tests with explicit synthetic evidence and real HTTP routes."""
 
+import io
 import json
 import tempfile
 import threading
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from PIL import Image
 
 from reconstruction_v2 import core
 from reconstruction_v2.object_association import consolidate
@@ -34,7 +36,9 @@ class Scene:
 
     def add(self, name, *args, **kwargs):
         handle = Handle(
-            visible=True, **{k: v for k, v in kwargs.items() if k != "visible"}
+            visible=True,
+            args=args,
+            **{k: v for k, v in kwargs.items() if k != "visible"},
         )
         self.nodes[name] = handle
         return handle
@@ -123,6 +127,129 @@ class InspectionTests(unittest.TestCase):
             inspection.evidence("after", observation)
         with self.assertRaises(ValueError):
             inspection.evidence("before", "../../mask")
+
+    def test_image_only_source_camera_and_context_outline(self):
+        original = self.inventory.listing("before")["objects"][0]
+        frame = self.inventory.captures["before"]["frames"][0]
+        obj = {
+            **original,
+            "point_count": 0,
+            "centroid": None,
+            "bounds": None,
+            "observation_ids": [],
+            "context_evidence": ["demo"],
+        }
+        record = {
+            "id": "context:demo",
+            "frame_index": 0,
+            "frame_id": frame["frame_id"],
+            "timestamp_sec": frame["elapsed_timestamp_sec"],
+            "status": "context",
+            "source_region_box": [4, 4, 20, 20],
+        }
+        scene = Scene()
+        inspection = ObjectInspection(self.inventory, scene)
+        frame_points = np.array([[0.0, 0.0, 1.0], [1.0, 1.0, 1.0]], np.float32)
+        inspection.source_points_provider = lambda *_: frame_points
+        inspection.support_cameras["before"] = core.read_json(
+            self.reconstruction / "before/cameras.json"
+        )
+        with (
+            patch.object(
+                self.inventory,
+                "object",
+                return_value=(obj, {"points": np.empty((0, 3))}),
+            ),
+            patch.object(
+                self.inventory, "context_record", return_value=record, create=True
+            ),
+        ):
+            inspection.select("before", obj["id"])
+            inspection.refresh()
+            self.assertEqual(
+                inspection.snapshot()["source_frame"]["frame_id"], frame["frame_id"]
+            )
+            self.assertEqual(inspection.visible_count, 0)
+            self.assertEqual(inspection.snapshot()["source_point_count"], 2)
+            np.testing.assert_array_equal(
+                scene.nodes["/object/source_points"].args[0], frame_points
+            )
+            self.assertEqual(
+                scene.nodes["/object/source_points"].args[1], (255, 185, 50)
+            )
+            self.assertNotIn("/object/centroid", scene.nodes)
+            camera = inspection.support_cameras["before"][0]
+            np.testing.assert_allclose(
+                scene.nodes["/object/source_camera"].args[0][0, 0],
+                np.asarray(camera["camera_to_world"])[:3, 3],
+            )
+            self.assertEqual(
+                scene.nodes["/object/source_camera"].args[1], (255, 185, 50)
+            )
+            with self.assertRaises(ValueError):
+                inspection.set_evidence("context:unrelated")
+            with self.assertRaises(ValueError):
+                inspection.options({"isolate": True})
+            inspection.options({"crop_selection": True})
+            inspection.refresh(
+                crop_settings={"crop_enabled": True, "plane": (0, 1, 0.5)}
+            )
+            self.assertEqual(inspection.snapshot()["source_point_count"], 1)
+            inspection.source_points_provider = lambda *_: np.empty((0, 3))
+            inspection.refresh()
+            self.assertEqual(inspection.snapshot()["source_display_points"], 0)
+            original_image = np.array(
+                Image.open(
+                    io.BytesIO(
+                        inspection.evidence("before", "context:demo", "original")
+                    )
+                )
+            )
+            overlay = np.array(
+                Image.open(
+                    io.BytesIO(inspection.evidence("before", "context:demo", "overlay"))
+                )
+            )
+            np.testing.assert_array_equal(overlay[4, 4], [255, 185, 50])
+            np.testing.assert_array_equal(overlay[12, 12], original_image[12, 12])
+            self.assertEqual(
+                Image.open(
+                    io.BytesIO(inspection.evidence("before", "context:demo", "crop"))
+                ).size,
+                (16, 16),
+            )
+            inspection.clear("after")
+            self.assertIsNone(inspection.snapshot()["source_frame"])
+            self.assertEqual(inspection.handles, [])
+
+    def test_frame_cloud_uses_all_support_not_just_first_observation(self):
+        state = _SyncState(self.reconstruction, ["before"], static=True)
+        state.root = self.base / "source-point-fixture"
+        directory = state.root / "before"
+        directory.mkdir(parents=True, exist_ok=True)
+        # Point 0 is seen in both frames. Frame 1 also observes point 1 twice.
+        np.savez(
+            directory / "observations.npz",
+            observation_frame_index=[0, 1, 1, 1],
+            cloud_point_index=[0, 0, 1, 1],
+        )
+        state.points["before"] = np.array([[10.0, 20.0, 30.0], [11.0, 21.0, 31.0]])
+        np.testing.assert_array_equal(
+            state.source_frame_points("before", 1), state.points["before"]
+        )
+        np.testing.assert_array_equal(
+            state.source_frame_points("before", 0), state.points["before"][:1]
+        )
+        with patch(
+            "reconstruction_v2.sync_viewer.np.load",
+            side_effect=AssertionError("cached frame should not reload"),
+        ):
+            np.testing.assert_array_equal(
+                state.source_frame_points("before", 1), state.points["before"]
+            )
+        for capture, frame in (("after", 0), ("before", -1), ("before", 2)):
+            with self.assertRaises(ValueError):
+                state.source_frame_points(capture, frame)
 
     def test_session_sequence_selection_isolation_and_capture_switch(self):
         server = SimpleNamespace(scene=Scene(), atomic=lambda: nullcontext())
@@ -225,6 +352,9 @@ class InspectionTests(unittest.TestCase):
         )
         session = state.begin_session()
         self.assertEqual(session["view_mode"], "objects")
+        self.assertIsNone(session["comparison"])
+        self.assertFalse(session["overlay"])
+        self.assertFalse(session["settings"]["before"]["show_path"])
         result = state.update("after", 0, 1, session["session"])
         self.assertEqual(result["frame_index"], 1)
         self.assertEqual(result["visible_points"], result["display_points"])

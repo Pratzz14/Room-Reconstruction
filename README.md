@@ -54,6 +54,39 @@ For the standard saved viewer, use `& $rdPython scripts/reconstruct.py view --ru
 
 Object output has a separate manifest/config/model lock and per-capture masks, observations, descriptors, membership, geometry, association diagnostics, and source previews. IDs are stable for identical saved inputs within an artifact version. Before IDs and After IDs do not establish shared physical identities. Centroids describe observed surfaces in independent relative coordinate frames, not calibrated physical centers.
 
+## Shared alignment and large-change comparison
+
+The comparison stage is now available as a CPU-only saved-artifact module. It expects an
+after-to-before set of fixed-structure correspondences and never changes raw reconstruction
+or object files. Estimate and inspect a transform with:
+
+```powershell
+& $rdPython scripts/compare.py align `
+    --correspondences outputs/fixed_structure_correspondences.npz `
+    --output outputs/alignment.json `
+    --threshold 0.05 --max-residual 0.10
+```
+
+The correspondence archive must contain finite `source` (After) and `target` (Before)
+`Nx3` arrays. The output records the Sim(3) direction, inliers, residuals, and an
+`accepted`, `provisional`, or `rejected` quality status. Use a rejected transform only for
+diagnostic overlays.
+
+After a usable alignment has been reviewed, compare the saved object inventory:
+
+```powershell
+& $rdPython scripts/compare.py match `
+    --reconstruction outputs/reconstruction_colab `
+    --objects outputs/objects_colab `
+    --transform outputs/alignment.json `
+    --tolerance 0.15 --output outputs/change_report.json
+```
+
+Matching is global and one-to-one across the room. Position is a soft clue, so a moved
+object can retain its identity. Weak or competing matches remain ambiguous; unmatched
+objects are not called added or removed without opposing visibility evidence. Measurements
+remain in relative units and use `before_world` as the comparison frame.
+
 To regenerate the upload bundle after source changes:
 
 ```powershell
@@ -204,3 +237,89 @@ Pilot reports remain `running` until all configured sizes complete. Full inferen
 Regression checks use known analytic coordinates, the pinned upstream PIL preprocessing source, malformed depth, source RGB/provenance, semantic corruption, isolated resume, concurrency and ZIP transport. They establish implementation behavior, not VGGT accuracy on these videos.
 
 The upstream reference is vendored with its original license header only for parity validation: https://github.com/facebookresearch/vggt/blob/a288dd0f14786c93483e45524328726ab7b1b4ce/vggt/utils/load_fn.py .
+
+
+## Gemini inventory refinement and shared identity proposals
+
+For the current **object inspection step**, use the viewer command below without `--comparison`. The left list defaults to objects with saved 3D points; clicking an entry highlights it in the right-hand room view. Focus and Isolate are available when needed. Choose Before or After to inspect each capture independently. Camera paths start off. Alignment overlays and cross-capture identity controls are reserved for the later comparison step. Image-only detections have a separate filter and retain their image evidence.
+
+Refinement uses the completed reconstructions and object inventories. It creates a separate derived inventory with canonical labels, individual items and small clutter collections, source IDs, geometry quality, image evidence and proposed Before/After identities. It does not align the captures or classify physical changes.
+
+```powershell
+Set-Location 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction v2'
+$rdPython = 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction\.venv\Scripts\python.exe'
+& $rdPython -m pip install -r requirements-refinement.txt
+
+# Local evidence preparation only: no provider calls.
+& $rdPython scripts/refine_objects.py prepare --reconstruction outputs/reconstruction_colab --objects outputs/objects_colab --output outputs/objects_refined_discovery
+
+# One joint Before/After generation; at most one targeted follow-up.
+& $rdPython scripts/refine_objects.py run --reconstruction outputs/reconstruction_colab --objects outputs/objects_colab --output outputs/objects_refined_discovery --baseline outputs/objects_refined
+
+# Verify provenance and geometry, without model execution.
+& $rdPython scripts/refine_objects.py verify --reconstruction outputs/reconstruction_colab --objects outputs/objects_colab --output outputs/objects_refined_discovery
+
+# Object-only viewer, with Refined / Original selection.
+& $rdPython scripts/reconstruct.py object-view --run outputs/reconstruction_colab --objects outputs/objects_colab --refinement outputs/objects_refined_discovery --port 8096
+```
+
+Open <http://127.0.0.1:8096/>. Ports 8096 and 8097 must both be available. Opening or operating the viewer makes no Gemini calls. Existing viewer commands without `--refinement` continue to inspect the original artifacts.
+
+Unknown objects are excluded from the viewer object list; saved segmentation artifacts remain intact. **Image-only detections** automatically open their supporting photo, highlight its saved camera frustum, and color cloud points supported by that frame in amber. The cloud highlight uses saved observation-to-cloud provenance, including points also observed in other frames. It covers the full source frame, not an object mask. Large highlights are sampled for display, with shown/total counts. Choose a different supporting frame to update the photo, camera, and cloud highlight. Amber photo outlines indicate a context region (or the full frame), never an inferred object mask or 3D position. Actual segmented objects remain cyan. Clear or switch captures to remove the source highlight. No playback or alignment is needed for this inspection flow.
+
+The revised discovery workflow uses a new output directory so the earlier `outputs/objects_refined` snapshot remains inspectable. Reusing the completed output uses its saved answers; it does not regenerate them. For an explicitly offline rebuild, append `--offline` to the refinement `run` command. Use a new output directory when changing source inputs or configuration. `--no-followup` restricts a new analysis to the initial generation. A failed/unknown request stops; `--retry-failed` permits an explicit retry within the same persisted attempt budget, not additional unbounded attempts.
+
+`--baseline` preserves prior inventory decisions for evidence the focused pass did not revisit; newer mask classifications take priority. The baseline must have the same reconstruction and raw-object binding. Omit it for a first refinement. Optional `--review-notes path/to/notes.json` supplies audited capture/evidence checks to the bounded follow-up. `--answer-file path/to/saved-response.json` imports an answer or sanitized request receipt and implies offline execution: conservative reference normalization and inventory rebuilding make zero provider calls. Original responses remain in `requests/`; imported-response provenance is recorded separately.
+
+Credentials: `GEMINI_API_KEY` or `GOOGLE_API_KEY` takes precedence. For compatibility, the CLI can read the existing local Gemini smoke-test configuration without executing it, via `--credential-source`; no credential is copied into output artifacts. No model fallback is automatic.
+
+`configs/refinement.json` defaults to `gemini-3.1-flash-lite`, 15 RPM / 250,000 input TPM / 500 RPD, a 125,000-token request ceiling, a 65-second minimum generation interval, two generation attempts per analysis, and a local daily generation cap of ten. Requests are serialized with a shared local project ledger under `outputs/refinement_cache`. Token-count preflight calls are separate API calls, cached as well. Daily accounting resets at Pacific midnight. These are local safeguards; other clients sharing the Google project can consume quota too. Quota errors never trigger automatic retry loops.
+
+Evidence preparation covers every saved observation with numbered crop sheets and up to eight context frames per capture. Gemini returns labels, groups, mask roles and identity proposals. Local validation catches invalid references, missing decisions, co-visible distinct objects and inappropriate large-item collections. Distinct chair/backpack identities can coexist at the same location. A mixed mask is image evidence, not permission to assign the whole point set to both objects. Small collections cannot provide rigid-object movement measurements. Low-confidence instance splits and cross-capture alternatives remain uncertain.
+
+Outputs in the refinement directory:
+
+- `summary.md`: inventory counts, validation decisions, source-frame links and paired evidence sheets.
+- `refinement.json`: reconstruction binding, shared identity proposals, unresolved evidence, quality counts and API usage.
+- `answer.json` and `validated_answer.json`: original model proposals and locally checked/split decisions.
+- `before/` and `after/`: canonical objects, accepted source membership and derived geometry. Measured centroids use approved source observations in each capture's relative coordinate frame.
+- `evidence_index.json`: source IDs, frame IDs, timestamps and mask references. `evidence/` holds the actual request images and paired evidence.
+- `repair_tasks.json`: mixed masks and visible items requiring their own segmentation. Repairs are queued for targeted segmentation; no GPU inference is performed by this workflow.
+- `alignment_candidates.json`: visual hints requiring later geometric validation, not accepted registration anchors.
+- `requests/`, `budget.json`, and saved prompts/schema: sanitized request receipts and the persistent generation attempt counter.
+
+Real-pair results require review. A named entry is not automatically a correct or complete physical identity; inconsistent geometry and omitted observations are retained explicitly. Unmatched identities are not additions/removals. Geometry status and observed-surface centroid variation are preparation for the next alignment/visibility stage, not a calibrated movement tolerance. There is no rotation estimation or movement trajectory stage.
+
+The discovery update explicitly reviews laptops, drinking bottles/flasks, oil bottles, pressure cookers, pans, plates, utensils and food containers in each capture. It adds up to six unmasked desk/storage detail views and a sheet of larger, diverse monitor/TV/lamp masks per capture. These search categories do not force an object to exist: each receives an evidence-linked visible, uncertain or not-observed decision. Missing category decisions and generic collections hiding distinct items trigger review warnings and the bounded follow-up.
+
+A laptop mask incorrectly labelled monitor/television can be renamed from its appearance. A pan/lid labelled lamp must be visually rechecked. Invalid electronics collections retain individual image-only review candidates instead of silently dropping all their observations. Items discovered in unmasked detail views are named even without a dedicated mask, with zero invented 3D points and a targeted segmentation repair task. The detector vocabulary in `configs/objects.json` is expanded for future object-inference runs; existing saved masks are not modified or regenerated by the Gemini refinement script.
+
+## Shared-frame alignment and global identity matching
+
+The saved-run comparison connects the refined inventories to room alignment and identity matching. It uses local image features, saved depth, camera poses and segmentation masks; it performs no GPU inference and makes no VLM/provider calls.
+
+```powershell
+Set-Location 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction v2'
+$rdPython = 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction\.venv\Scripts\python.exe'
+& $rdPython -m pip install -r requirements-comparison.txt
+
+& $rdPython scripts/compare.py run --reconstruction outputs/reconstruction_colab --objects outputs/objects_colab --refinement outputs/objects_refined_discovery --output outputs/comparison_v2
+
+& $rdPython scripts/compare.py verify --reconstruction outputs/reconstruction_colab --objects outputs/objects_colab --refinement outputs/objects_refined_discovery --output outputs/comparison_v2
+
+& $rdPython scripts/reconstruct.py object-view --run outputs/reconstruction_colab --objects outputs/objects_colab --refinement outputs/objects_refined_discovery --comparison outputs/comparison_v2 --port 8098
+```
+
+Open <http://127.0.0.1:8098/>; the embedded 3D scene uses port 8099. The existing 8096 inventory viewer remains separate. In the comparison viewer, **Overlay both captures** shows Before in blue and aligned After in orange. Disable the overlay to inspect the selected capture in original colors. The object list retains capture-specific IDs and shows shared identities, match status and alternatives. **Show counterpart** is enabled for a single matched or visual-proposal counterpart; ambiguous matches remain explicit. Image-only items retain evidence controls and disabled 3D controls. There is no source-video playback.
+
+Alignment uses reciprocal SIFT matches within corresponding fixed-instance masks or the room shell outside other detected objects. Object centroids and camera paths are not fitting landmarks. Whole selected frames in either capture are withheld from fitting. The gate checks held-out residuals, inlier support, multiple frame pairs, distributed geometry, separate wall/floor plane directions and scale stability. Shell planes are fitted from Before training frames only; they partition support and do not create image correspondences. The configured fixed-label assumptions and residual threshold are recorded. Named static instances cannot match across region IDs. Collinear landmarks and non-rigid/reflected transforms are rejected.
+
+After-to-Before mapping is `p_before = scale * rotation @ p_after + translation`. Separate exports transform the full After cloud, object geometry/centroids/bounds, camera positions/orientations and optical-axis depth scale together. Point-row ordering, RGB, observation membership, representative IDs, pixels and supporting frame references remain tied to the original artifacts. Raw reconstruction and segmentation outputs are preserved.
+
+`outputs/comparison_v2` contains `alignment.json`, `identities.json`, `comparison.json`, `summary.md`, source-linked `correspondences.npz` / `correspondence_index.json`, and aligned exports under `after/`. `verify` checks source bindings, hashes, coordinate transformations, camera/depth scale and identity coverage. Repeating `run` reuses bound local feature correspondences. Changed source/config bindings require a new output directory.
+
+Identity matching searches the entire room using semantic compatibility, saved appearance descriptors, shape and supporting geometry. Accepted room alignment permits a small position cost; distance never vetoes an identity match. Every object has an unmatched option, even with equal inventory sizes. Competing global assignments and alternatives in both directions remain ambiguous. Existing VLM identity proposals are advisory. A matching label alone cannot establish an identity; an image-only proposal is distinguished from a descriptor-supported match.
+
+On the supplied real pair, the initial connected run passed its engineering alignment checks: 4,182 feature correspondences, 80.3% held-out inliers, median held-out residual 0.0122 relative units, scale 1.0132, and 0.49% scale variation across subsamples. Matching retained 3 descriptor-supported pairs, 7 visual-only proposals, 9 ambiguous pairs and 7 unmatched entries. These are real-video diagnostics, separate from the analytic regression fixtures. The refrigerator remains ambiguous because its retained mask appearances disagree; this is not an unchanged/moved conclusion. The gaming-chair fragments also retain capture-identity ambiguity.
+
+**Limits:** accepted geometry checks are not independent depth calibration, metric accuracy or verified physical changes. Object rotation is not estimated. Missing or inconsistent object geometry still prevents reliable centroid comparison even when room alignment passes. Rejected alignment can produce a labelled diagnostic overlay, but positions do not enter matching and location comparisons remain blocked. Unmatched objects are not added/removed evidence. This stage deliberately exports no movement/addition/removal classification. The legacy `align` command creates an unbound landmark diagnostic; legacy `match` cannot authorize location classification from an unbound or rejected transform.

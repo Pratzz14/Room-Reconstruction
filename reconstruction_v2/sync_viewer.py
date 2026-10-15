@@ -37,6 +37,9 @@ class _SyncState:
         self.server = self.scene = None
         self.timeline = {name: load_timeline(root, name) for name in captures}
         self.static = static
+        self.comparison = getattr(inventory, "comparison", None)
+        self.after_transform = getattr(inventory, "after_transform", None)
+        self.overlay = self.after_transform is not None
         if static:
             self.end = len(self.timeline[self.capture].frames) - 1
             self.playback_time = self.timeline[self.capture].timestamps[-1]
@@ -44,6 +47,9 @@ class _SyncState:
         self.groups, self.camera_handles, self.path_handles = {}, {}, {}
         self.display_indices, self.bounds, self.clients = {}, {}, {}
         self.settings = {name: dict(DEFAULT_SETTINGS) for name in captures}
+        if static and not self.comparison:
+            for settings in self.settings.values():
+                settings["show_path"] = False
         self.maximum = int(maximum)
         if self.maximum < 1:
             raise ValueError("Display point limit must be positive")
@@ -51,6 +57,7 @@ class _SyncState:
         from .object_inspection import ObjectInspection
         self.inspection = ObjectInspection(inventory) if inventory is not None else None
         self.object_refresh_key = None
+        self.frame_point_indices = {}
 
     def atomic(self):
         return self.server.atomic() if self.server else nullcontext()
@@ -62,7 +69,9 @@ class _SyncState:
                     "timestamps": {n: list(t.timestamps) for n, t in self.timeline.items()},
                     "settings": self.settings, "maximum_points": self.maximum,
                     "objects_available": self.inspection is not None,
-                    "view_mode": "objects" if self.static else "playback"}
+                    "view_mode": "objects" if self.static else "playback",
+                    "comparison": self.comparison["alignment"] if self.comparison else None,
+                    "overlay": self.overlay}
 
     def snapshot(self):
         with self.lock:
@@ -74,8 +83,10 @@ class _SyncState:
                     "revealed_frames": end + 1,
                     "visible_points": int(np.count_nonzero(first[indices] <= end)) if len(indices) else 0,
                     "display_points": len(indices), "empty_crop": self.bounds.get(self.capture) is None,
-                    "ready": bool(self.clients) and all(c["framed"] for c in self.clients.values()),
+                    # An inactive tab may never acknowledge its camera fit; it must not block active viewers.
+                    "ready": any(c["framed"] for c in self.clients.values()),
                     "geometry_updates": self.geometry_updates,
+                    "overlay": self.overlay,
                     "settings": self.settings[self.capture],
                     "inspection": self.inspection.snapshot() if self.inspection else None,
                     "cameras": [{"id": key, "manual": c["manual"], "aspect": c["aspect"],
@@ -86,6 +97,7 @@ class _SyncState:
         self.server, self.scene = server, server.scene
         if self.inspection:
             self.inspection.scene = server.scene
+            self.inspection.source_points_provider = self.source_frame_points
             self.inspection.clear(self.capture)
         for name in self.captures:
             with np.load(self.root / name / "cloud.npz", allow_pickle=False) as data:
@@ -96,9 +108,34 @@ class _SyncState:
                 with np.load(self.root / name / "observations.npz", allow_pickle=False) as data:
                     self.observation_frames[name] = first_observation_frames(data, len(self.points[name]))
             self.cameras[name] = read_json(self.root / name / "cameras.json")
+            if name == "after" and self.after_transform:
+                from .alignment import apply_similarity
+                from .comparison import transformed_cameras
+                self.points[name] = apply_similarity(self.points[name], self.after_transform).astype(np.float32)
+                self.cameras[name] = transformed_cameras(self.cameras[name], self.after_transform)
             self._build_groups(name)
             self._build_cameras(name)
+            if self.inspection:
+                self.inspection.support_cameras[name] = self.cameras[name]
+                self.inspection.camera_scales[name] = max(float(np.linalg.norm(
+                    room_bounds(self.points[name])[1] - room_bounds(self.points[name])[0])) * 0.04, 0.001)
         self._visibility()
+
+    def source_frame_points(self, capture, frame_index):
+        """Existing cloud points with any retained observation in this frame."""
+        if capture not in self.captures or not 0 <= frame_index < len(self.timeline[capture].frames):
+            raise ValueError("Unknown source frame")
+        key = (capture, frame_index)
+        if key not in self.frame_point_indices:
+            with np.load(self.root / capture / "observations.npz", allow_pickle=False) as data:
+                rows = data["observation_frame_index"] == frame_index
+                indices = np.unique(data["cloud_point_index"][rows])
+            if len(self.frame_point_indices) >= 8:
+                self.frame_point_indices.pop(next(iter(self.frame_point_indices)))
+            self.frame_point_indices[key] = indices
+        # self.points already uses the displayed coordinate system, including
+        # an optional After transform when comparison is explicitly enabled.
+        return self.points[capture][self.frame_point_indices[key]]
 
     def _build_groups(self, capture):
         for _, handle, _ in self.groups.get(capture, []):
@@ -118,7 +155,8 @@ class _SyncState:
             if not len(selected):
                 continue
             handle = self.scene.add_point_cloud(
-                f"/sync/{capture}/points_{frame}", points[selected], self.colors[capture][selected],
+                f"/sync/{capture}/points_{frame}", points[selected],
+                np.tile((80, 160, 255) if capture == "before" else (255, 170, 70), (len(selected), 1)).astype(np.uint8) if self.overlay else self.colors[capture][selected],
                 point_size=settings["point_size"], precision="float32", visible=False)
             self.groups[capture].append((frame, handle, len(selected)))
         self.geometry_updates += 1
@@ -150,7 +188,7 @@ class _SyncState:
     def _visibility(self):
         isolated = self.inspection is not None and self.inspection.isolate
         for name in self.captures:
-            active = name == self.capture and not isolated
+            active = (name == self.capture or self.overlay) and not isolated
             for frame, handle, _ in self.groups.get(name, []):
                 handle.visible = active and frame <= self.end
             show = active and self.settings[name]["show_path"]
@@ -240,10 +278,17 @@ class _SyncState:
                 return {**self.snapshot(), "stale": True}
             if object_action is not None:
                 if (not self.inspection or not isinstance(object_action, dict)
-                        or set(object_action) - {"select", "clear", "options", "focus"}):
+                        or set(object_action) - {"select", "clear", "options", "focus", "inventory_mode", "overlay", "evidence"}):
                     raise ValueError("Object inspection is unavailable or action is invalid")
+                if "inventory_mode" in object_action:
+                    if not hasattr(self.inspection.inventory, "use_mode") or object_action["inventory_mode"] not in ("original", "refined"):
+                        raise ValueError("Inventory mode is unavailable")
+                    if "select" in object_action:
+                        raise ValueError("Change inventory mode before selecting an object")
                 if "select" in object_action:
                     self.inspection.inventory.object(capture, object_action["select"])
+                if "overlay" in object_action and (not self.after_transform or type(object_action["overlay"]) is not bool):
+                    raise ValueError("Aligned overlay is unavailable or invalid")
                 for key in ("clear", "focus"):
                     if key in object_action and type(object_action[key]) is not bool:
                         raise ValueError("Object action must be boolean")
@@ -263,6 +308,14 @@ class _SyncState:
                         or not isinstance(chosen["crop_percent"], (int, float))
                         or not 0 <= chosen["crop_percent"] <= 100):
                     raise ValueError("Display settings outside supported range")
+            if object_action and "inventory_mode" in object_action:
+                self.inspection.clear(capture)
+                self.inspection.inventory.use_mode(object_action["inventory_mode"])
+            if object_action and "overlay" in object_action:
+                self.overlay = object_action["overlay"]
+                if self.scene is not None:
+                    for name in self.captures:
+                        self._build_groups(name)
             previous = self.settings[capture]
             cropped = any(chosen[k] != previous[k] for k in ("crop_enabled", "crop_percent", "crop_direction"))
             changed = capture != self.capture
@@ -277,6 +330,8 @@ class _SyncState:
                         self.inspection.clear(capture)
                     if "select" in object_action:
                         self.inspection.select(capture, object_action["select"])
+                    if "evidence" in object_action:
+                        self.inspection.set_evidence(object_action["evidence"])
                     if "options" in object_action:
                         self.inspection.options(object_action["options"])
                 if fit:
@@ -306,7 +361,7 @@ class _SyncState:
                 if changed or cropped or fit:
                     self.fit()
                 if object_action and object_action.get("focus"):
-                    if not self.inspection.selected:
+                    if not self.inspection.selected or not self.inspection.selected.get("point_count"):
                         raise ValueError("Select an object before focusing")
                     self.inspection.focus_active = True
                     self.fit()
@@ -358,7 +413,8 @@ def make_handler(state, videos, media_records, scene_port, page_name="sync.html"
                         self.send_error(404)
                         return
                     try:
-                        data = state.inspection.evidence(parts[1], parts[2], parts[3])
+                        from urllib.parse import unquote
+                        data = state.inspection.evidence(parts[1], unquote(parts[2]), parts[3])
                     except (ValueError, KeyError):
                         self.send_error(404)
                         return

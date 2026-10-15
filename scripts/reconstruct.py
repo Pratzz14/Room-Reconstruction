@@ -44,6 +44,8 @@ def main():
         if name == "object-view":
             p.add_argument("--port", type=int, default=8094)
             p.add_argument("--objects", type=Path, required=True)
+            p.add_argument("--refinement", type=Path)
+            p.add_argument("--comparison", type=Path)
         if name == "preview":
             p.add_argument("--port", type=int, default=8091)
     p = commands.add_parser("import")
@@ -76,7 +78,7 @@ def main():
         return 0
     elif args.command == "object-view":
         from reconstruction_v2.inspection_viewer import object_view
-        object_view(args.run, args.objects, args.port)
+        object_view(args.run, args.objects, args.port, refinement=args.refinement, comparison=args.comparison)
         return 0
     else:
         from functools import partial

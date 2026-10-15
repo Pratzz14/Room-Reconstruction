@@ -4,7 +4,7 @@ import io
 import math
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .core import safe_path
 from .sync import fit_room
@@ -41,12 +41,20 @@ class ObjectInspection:
         self.handles = []
         self.visible_count = 0
         self.evidence_cache = {}
+        self.selected_evidence = None
+        self.support_cameras = {}
+        self.camera_scales = {}
+        self.source_points_provider = None
+        self.source_point_count = self.source_display_points = 0
 
     def clear(self, capture=None):
         for handle in self.handles:
             handle.remove()
         self.handles = []
         self.selected = self.identifier = self.geometry = None
+        self.selected_evidence = None
+        self.visible_count = 0
+        self.source_point_count = self.source_display_points = 0
         self.isolate = self.focus_active = False
         self.mode = "full"
         if capture is not None:
@@ -57,6 +65,85 @@ class ObjectInspection:
         obj, geometry = self.inventory.object(capture, identifier)
         self.clear(capture)
         self.selected, self.identifier, self.geometry = obj, identifier, geometry
+        if not obj.get("point_count"):
+            evidence = ["context:" + eid for eid in obj.get("context_evidence", [])]
+            evidence += obj.get("observation_ids", [])
+            if evidence:
+                self.set_evidence(evidence[0])
+
+    def set_evidence(self, identifier):
+        if self.selected is None or not isinstance(identifier, str):
+            raise ValueError("Select an object before choosing its supporting frame")
+        allowed = set(self.selected.get("observation_ids", []))
+        allowed.update(
+            "context:" + eid for eid in self.selected.get("context_evidence", [])
+        )
+        if identifier and identifier not in allowed:
+            raise ValueError("Frame is not evidence for the selected object")
+        if identifier:
+            self.evidence_record(self.capture, identifier)
+        self.selected_evidence = identifier or None
+
+    def source_frame(self):
+        if not self.selected_evidence:
+            return None
+        record = self.evidence_record(self.capture, self.selected_evidence)
+        return {
+            key: record.get(key)
+            for key in (
+                "id",
+                "frame_index",
+                "frame_id",
+                "timestamp_sec",
+                "status",
+                "source_region_box",
+            )
+        }
+
+    def highlight_source_frame(self):
+        record = self.source_frame()
+        cameras = self.support_cameras.get(self.capture, [])
+        if not record or self.scene is None or not cameras:
+            return
+        camera = cameras[record["frame_index"]]
+        if camera["frame_id"] != record["frame_id"]:
+            raise ValueError("Source frame does not match its saved camera")
+        width, height = camera["model_width"], camera["model_height"]
+        corners = np.array(
+            [
+                [-0.5, -0.5, 1],
+                [width - 0.5, -0.5, 1],
+                [width - 0.5, height - 0.5, 1],
+                [-0.5, height - 0.5, 1],
+            ]
+        )
+        corners = corners @ np.linalg.inv(np.asarray(camera["intrinsics"])).T
+        corners *= self.camera_scales.get(self.capture, 0.05)
+        lines = np.concatenate(
+            (
+                np.stack((np.zeros_like(corners), corners), axis=1),
+                np.stack((corners, np.roll(corners, -1, axis=0)), axis=1),
+            )
+        )
+        pose = np.asarray(camera["camera_to_world"])
+        lines = lines @ pose[:3, :3].T + pose[:3, 3]
+        self.handles.append(
+            self.scene.add_line_segments(
+                "/object/source_camera",
+                lines.astype(np.float32),
+                (255, 185, 50),
+                thickness=4,
+                thickness_units="screen",
+            )
+        )
+        self.handles.append(
+            self.scene.add_label(
+                "/object/source_frame",
+                f"Source camera · {self.capture.title()} · frame {record['frame_id'].rsplit('_', 1)[-1].lstrip('0') or '0'} · {record['timestamp_sec']:.2f}s",
+                position=tuple(pose[:3, 3]),
+                depth_test=False,
+            )
+        )
 
     def options(self, values):
         allowed = {"mode", "isolate", "show_centroid", "show_bounds", "crop_selection"}
@@ -69,8 +156,42 @@ class ObjectInspection:
                 raise ValueError("Invalid object display option")
         if values.get("isolate") and self.selected is None:
             raise ValueError("Select an object before isolating")
+        if values.get("isolate") and not self.selected.get("point_count"):
+            raise ValueError(
+                "This object has image evidence only; isolation needs geometry"
+            )
         for key, value in values.items():
             setattr(self, key, value)
+
+    def highlight_source_points(self, crop_settings, point_size):
+        if (
+            self.selected.get("point_count")
+            or not self.selected_evidence
+            or self.source_points_provider is None
+        ):
+            return
+        record = self.source_frame()
+        points = self.source_points_provider(self.capture, record["frame_index"])
+        if self.crop_selection and crop_settings and crop_settings.get("crop_enabled"):
+            plane = crop_settings.get("plane")
+            if plane is not None:
+                axis, sign, limit = plane
+                points = points[points[:, axis] * sign <= limit]
+        self.source_point_count = len(points)
+        maximum = self.inventory.config["viewer"]["max_object_points"]
+        self.source_display_points = min(len(points), maximum)
+        if not len(points) or self.scene is None:
+            return
+        rows = np.linspace(0, len(points) - 1, self.source_display_points).astype(int)
+        self.handles.append(
+            self.scene.add_point_cloud(
+                "/object/source_points",
+                points[rows],
+                (255, 185, 50),
+                point_size=point_size * 1.5,
+                precision="float32",
+            )
+        )
 
     def snapshot(self):
         return {
@@ -81,6 +202,9 @@ class ObjectInspection:
             "show_bounds": self.show_bounds,
             "crop_selection": self.crop_selection,
             "visible_points": self.visible_count,
+            "source_frame": self.source_frame(),
+            "source_point_count": self.source_point_count,
+            "source_display_points": self.source_display_points,
             "note": "Full saved object; all supporting views; ceiling crop bypassed"
             if self.selected and self.mode == "full" and not self.crop_selection
             else "Saved full-object centroid; visible geometry follows selected support"
@@ -93,8 +217,11 @@ class ObjectInspection:
             handle.remove()
         self.handles = []
         self.visible_count = 0
+        self.source_point_count = self.source_display_points = 0
         if self.selected is None:
             return
+        self.highlight_source_frame()
+        self.highlight_source_points(crop_settings, point_size)
         geometry = self.geometry
         selected = np.arange(len(geometry["points"]))
         if self.mode == "playback" and frame_index is not None:
@@ -150,7 +277,7 @@ class ObjectInspection:
             )
 
     def fit(self, client):
-        if self.selected is None:
+        if self.selected is None or not self.selected.get("point_count"):
             return None
         camera = client.camera
         fitted = fit_room(np.array(self.selected["bounds"]), camera.aspect)
@@ -179,6 +306,10 @@ class ObjectInspection:
         return fitted
 
     def evidence_record(self, capture, observation_id):
+        if observation_id.startswith("context:") and hasattr(
+            self.inventory, "context_record"
+        ):
+            return self.inventory.context_record(capture, observation_id)
         data = self.inventory.captures.get(capture)
         if data is None or observation_id not in data["index"]:
             raise ValueError("Unknown source observation in capture")
@@ -197,15 +328,33 @@ class ObjectInspection:
             safe_path(self.inventory.reconstruction, frame["image_path"])
         ) as image:
             rgb = np.array(image.convert("RGB"))
-        with Image.open(
-            safe_path(self.inventory.root, record["mask_path"])
-        ) as mask_image:
-            mask = np.asarray(mask_image) > 0
+        if record.get("status") == "context":
+            mask = np.zeros(rgb.shape[:2], bool)
+        else:
+            with Image.open(
+                safe_path(self.inventory.root, record["mask_path"])
+            ) as mask_image:
+                mask = np.asarray(mask_image) > 0
         if kind != "original":
             rgb[mask] = (
                 rgb[mask].astype(float) * 0.5 + np.array([0, 220, 255]) * 0.5
             ).astype(np.uint8)
         image = Image.fromarray(rgb)
+        if kind != "original" and record.get("status") == "context":
+            # A context window is not an object mask. Outline it without tinting
+            # pixels that have not been segmented as belonging to this object.
+            box = record.get("source_region_box") or [0, 0, image.width, image.height]
+            x0, y0, x1, y1 = box
+            ImageDraw.Draw(image).rectangle(
+                (
+                    max(0, x0),
+                    max(0, y0),
+                    min(image.width - 1, x1 - 1),
+                    min(image.height - 1, y1 - 1),
+                ),
+                outline=(255, 185, 50),
+                width=max(3, image.width // 250),
+            )
         if kind == "crop" and mask.any():
             y, x = np.where(mask)
             pad = max(4, int(max(x.max() - x.min(), y.max() - y.min()) * 0.1))
@@ -217,6 +366,12 @@ class ObjectInspection:
                     min(image.height, int(y.max()) + pad + 1),
                 )
             )
+        elif (
+            kind == "crop"
+            and record.get("status") == "context"
+            and record.get("source_region_box")
+        ):
+            image = image.crop(tuple(record["source_region_box"]))
         image.thumbnail((1280, 960))
         stream = io.BytesIO()
         image.save(stream, format="PNG")

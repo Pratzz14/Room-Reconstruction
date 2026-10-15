@@ -7,7 +7,7 @@ from .object_contracts import ObjectInventory
 from .sync_viewer import _SyncState, check_viewer_ports, serve_viewer
 
 
-def object_view(root, objects, port=8094):
+def object_view(root, objects, port=8094, refinement=None, comparison=None):
     root = Path(root).resolve()
     check_viewer_ports(port)
     manifest = read_json(root / "run_manifest.json")
@@ -23,6 +23,15 @@ def object_view(root, objects, port=8094):
         verify_capture(root, name)
     print("Verifying object inventories...", flush=True)
     inventory = ObjectInventory(root, objects)
+    if comparison:
+        from .comparison import ComparisonInventory
+        if refinement:
+            from .refined_inventory import RefinedInventory
+            inventory = RefinedInventory(inventory, refinement)
+        inventory = ComparisonInventory(inventory, comparison)
+    elif refinement:
+        from .refined_inventory import InventoryModes
+        inventory = InventoryModes(inventory, refinement)
     maximum = (
         read_json(root / "config.json").get("viewer", {}).get("max_points", 200000)
     )

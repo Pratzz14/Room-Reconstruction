@@ -1,0 +1,19 @@
+{
+  "version": "comparison-v1",
+  "fixed_labels": ["refrigerator", "wardrobe", "bookshelf", "cabinet", "window", "door"],
+  "sift_features": 1800,
+  "ratio_test": 0.7,
+  "max_matches_per_pair_region": 60,
+  "holdout_stride": 5,
+  "ransac_iterations": 1600,
+  "seed": 17,
+  "residual_extent_fraction": 0.035,
+  "min_inlier_fraction": 0.4,
+  "min_correspondences": 30,
+  "min_frame_pairs": 4,
+  "min_regions": 2,
+  "min_support_extent_fraction": 0.25,
+  "minimum_scale": 0.1,
+  "maximum_scale": 10.0,
+  "matching": {"unmatched_cost": 0.55, "ambiguity_margin": 0.06}
+}
