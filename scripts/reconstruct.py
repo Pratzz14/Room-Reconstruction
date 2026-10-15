@@ -28,13 +28,17 @@ def main():
             p.add_argument("--capture", choices=("before", "after"))
         else:
             p.add_argument("--capture", choices=("before", "after"), required=True)
-    for name in ("verify", "view", "pack", "preview"):
+    for name in ("verify", "view", "sync-view", "pack", "preview"):
         p = commands.add_parser(name)
         p.add_argument("--run", type=Path, required=True)
         if name == "pack":
             p.add_argument("--archive", type=Path, required=True)
         if name == "view":
             p.add_argument("--port", type=int, default=8090)
+        if name == "sync-view":
+            p.add_argument("--port", type=int, default=8092)
+            p.add_argument("--before-video", type=Path)
+            p.add_argument("--after-video", type=Path)
         if name == "preview":
             p.add_argument("--port", type=int, default=8091)
     p = commands.add_parser("import")
@@ -55,11 +59,15 @@ def main():
     elif args.command == "verify":
         result = {name: core.verify_capture(args.run, name) for name in ("before", "after")}
     elif args.command in ("pack", "import"):
-        from reconstruction_v2.archive import pack, import_archive
+        from reconstruction_v2.archive import import_archive, pack
         result = pack(args.run, args.archive) if args.command == "pack" else import_archive(args.archive, args.output)
     elif args.command == "view":
         from reconstruction_v2.viewer import view
         view(args.run, args.port)
+        return 0
+    elif args.command == "sync-view":
+        from reconstruction_v2.sync_viewer import synchronized_view
+        synchronized_view(args.run, args.port, args.before_video, args.after_video)
         return 0
     else:
         from functools import partial

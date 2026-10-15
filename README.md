@@ -52,6 +52,23 @@ $rdRun = 'outputs/reconstruction_colab'
 
 Open `http://127.0.0.1:8090`. Select Before/After, toggle cameras, choose a frame, or enter a **saved cloud point ID** and click **Show point source**. The original image marks the fractional source pixel; the sidebar lists model pixel, frame/time, relative depth, confidence, source-video hash and number of supporting observations. All point IDs remain accessible even if rendering is sampled.
 
+For the synchronized visualizer, use the completed run and its original source videos:
+
+```powershell
+Set-Location 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction v2'
+$rdPython = 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction\.venv\Scripts\python.exe'
+$rdRun = 'outputs/reconstruction_colab'
+& $rdPython scripts/reconstruct.py sync-view --run $rdRun --port 8092
+```
+
+Open `http://127.0.0.1:8092`. The source video is on the left and the room is on the right. **The room is fitted automatically** from the complete capture's robust bounds and the actual 3D viewport size, before playback starts. Drag to orbit or scroll to zoom; **Fit room** restores the overview. Playback preserves your viewpoint. Switching capture and changing the ceiling crop refit the selected room; resizing refits an automatic overview and preserves an orbit you adjusted manually.
+
+Play/pause, restart, the seek bar and 0.25×/0.5×/1×/2× speed controls share the video's clock. Points appear when playback reaches their earliest supporting saved observation; seeking backward hides later groups. The saved final positions and RGB are retained, so this is a retrospective reveal of the full-capture reconstruction. Geometry updates at selected reconstruction frames, while the video plays continuously. Before and After use independent timelines and coordinate frames. Display sampling is deterministic and capped by `viewer.max_points` (200,000 by default); cropping is applied before sampling. The blue frustum marks the latest reached camera and the orange path shows its previous positions. Hide the ceiling with the crop controls; a 100% crop explicitly displays an empty-room message.
+
+On first launch the viewer prints conversion progress while it prepares H.264/AAC playback copies of the original HEVC videos. Copies and hash-checked receipts live under `outputs/sync_cache`, outside the verified run. Later launches reuse them. Original video hashes are checked once at startup; source videos and saved reconstruction evidence are not edited. Install local-only dependencies with `& $rdPython -m pip install -r requirements-viewer.txt` if needed. No GPU environment or Colab rerun is required.
+
+If originals were relocated, append `--before-video 'D:\Videos\before.mp4' --after-video 'D:\Videos\after.mp4'`. Overrides must match the recorded video hashes. Both localhost ports 8092 and 8093 must be free; use another `--port` to change the pair. Ctrl+C stops both servers. A single browser page controls playback: opening/reloading another page transfers control, and the older page reports that it must reload. Camera orbit and zoom remain available in the 3D pane.
+
 To remove the ceiling from the view, enable **Hide ceiling** and adjust **Ceiling crop (%)**, starting at 15. The default **Ceiling direction** is `-Y`, matching the viewer's up direction. If it cuts the wrong side, change that direction; the captures are not gravity-aligned. This is a manual plane cut, so nearby tall objects can also be hidden. Settings are independent for Before/After and last for the viewer session. Disable the checkbox to restore the full display. Saved point IDs, files and reconstruction evidence remain unchanged; sampling occurs after clipping so the visible room retains its display budget. Restart the local viewer to load this change; no Colab run is needed.
 
 For a depth-only viewer:
@@ -62,7 +79,7 @@ For a depth-only viewer:
 
 Open `http://127.0.0.1:8091/before/previews/depth_preview.html` or the corresponding `after` path. Each panel shows RGB, numeric-range-labeled relative Z depth and confidence. Display ranges are consistent across one capture and independent across captures; raw arrays are never normalized or altered by visualization. Gray marks invalid/filtered samples.
 
-For a new local environment, install NumPy, Pillow and Viser (plus SciPy if extending geometry checks). GPU libraries are not required for saved-run viewing. The provided environment lock is intended for the isolated Colab GPU environment, not for overwriting another project's environment.
+For a new local viewer environment, use `requirements-viewer.txt` (NumPy, Pillow, Viser and PyAV). GPU libraries are not required for saved-run viewing. The provided reconstruction environment lock is intended for the isolated Colab GPU environment, not for overwriting another project's environment.
 
 ## Contracts and artifacts
 

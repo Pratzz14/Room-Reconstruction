@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Room reconstruction · synchronized replay</title>
+  <style>
+    :root { color-scheme:dark; font:14px/1.45 system-ui,sans-serif; background:#101318; color:#e8eaed }
+    * { box-sizing:border-box } body { margin:0; height:100dvh; display:flex; flex-direction:column }
+    header { padding:12px 18px; display:flex; justify-content:space-between; align-items:center; gap:12px }
+    h1 { font-size:17px; margin:0; font-weight:600 } .subtitle { color:#aeb8c6; font-size:12px }
+    button,select,input { font:inherit } button,select { background:#282f3a; color:inherit; border:1px solid #4f5c6c; border-radius:5px; padding:6px 10px }
+    button { cursor:pointer } button:hover { background:#364254 } button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #78bcff; outline-offset:2px }
+    button:disabled { cursor:wait; opacity:.45 } label { display:inline-flex; align-items:center; gap:6px }
+    .toolbar { padding:8px 18px; display:flex; align-items:center; flex-wrap:wrap; gap:10px; background:#1b2028; border-block:1px solid #303846 }
+    #seek { flex:1; min-width:120px; accent-color:#78bcff } #clock { font-variant-numeric:tabular-nums; min-width:105px }
+    #status { padding:6px 18px; font-size:12px; color:#b2c3d5; min-height:30px } #status.error { color:#ffb2a8 }
+    main { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); flex:1; min-height:0; gap:10px; padding:0 10px 10px }
+    .panel { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid #303846; border-radius:7px; background:#07090c }
+    h2 { font-size:13px; font-weight:500; margin:0; padding:9px 12px; background:#1b2028 }
+    .view { position:relative; flex:1; min-height:0 } video,iframe { width:100%; height:100%; border:0; display:block; background:#07090c } video { object-fit:contain }
+    #scene { position:absolute; top:0; left:0; transform-origin:top left }
+    .scene-controls { display:flex; flex-wrap:wrap; gap:9px; align-items:center; padding:8px 10px; background:#171c24; font-size:12px }
+    .scene-controls input[type=range] { width:70px; accent-color:#78bcff } #fit { background:#284766; border-color:#5783ac }
+    #empty { position:absolute; bottom:15px; left:12px; right:12px; padding:8px; background:#171c24e6; border-radius:4px; pointer-events:none; font-size:12px }
+    footer { padding:0 14px 8px; font-size:11px; color:#9ba8b8 } [hidden] { display:none!important }
+    @media(max-width:760px) { body { height:auto; min-height:100dvh } header { align-items:flex-start } main { grid-template-columns:1fr; flex:none } .panel { height:440px } #clock { min-width:auto } .subtitle { max-width:260px } }
+  </style>
+</head>
+<body>
+  <header><div><h1>Room reconstruction</h1><div class="subtitle">Progressive replay of a completed reconstruction</div></div>
+    <label>Capture <select id="capture" aria-label="Capture"></select></label></header>
+  <div class="toolbar" role="group" aria-label="Playback controls">
+    <button id="play" disabled>Play</button><button id="restart" disabled>Restart</button>
+    <input id="seek" type="range" min="0" max="0" value="0" step="0.001" aria-label="Video timeline" disabled>
+    <span id="clock">0:00 / 0:00</span><label>Speed <select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option selected value="1">1×</option><option value="2">2×</option></select></label>
+  </div>
+  <div id="status" role="status" aria-live="polite">Connecting to the room view…</div>
+  <main>
+    <section class="panel"><h2>Source video</h2><div class="view"><video id="video" playsinline preload="auto" aria-label="Source video"></video></div></section>
+    <section class="panel"><h2>Room · drag to orbit, scroll to zoom</h2>
+      <div class="scene-controls">
+        <button id="fit">Fit room</button><label><input type="checkbox" id="path" checked>Camera path</label>
+        <label>Point size <input type="range" id="size" min="0.0005" max="0.02" step="0.0005" value="0.003"></label>
+        <label><input type="checkbox" id="crop">Hide ceiling</label>
+        <label id="direction-label" hidden>Direction <select id="direction" aria-label="Ceiling direction"><option>-Y</option><option>+Y</option><option>-X</option><option>+X</option><option>-Z</option><option>+Z</option></select></label>
+        <label id="percent-label" hidden>Crop <input type="range" id="percent" min="0" max="100" value="15" aria-label="Ceiling crop percent"><span id="percent-value">15%</span></label>
+      </div>
+      <div class="view" id="scene-view"><iframe id="scene" src="http://127.0.0.1:__SCENE_PORT__/" title="3D room reconstruction"></iframe><div id="empty">The room will appear as the video reaches the selected reconstruction frames.</div></div>
+    </section>
+  </main>
+  <footer>Final saved geometry, revealed at its first supporting observation. Relative units; capture-local coordinates. Geometry advances at selected frames.</footer>
+  <script>
+    const $ = id => document.getElementById(id);
+    const video = $('video'), capture = $('capture'), status = $('status');
+    let config, session, sequence=0, desired=null, busy=false, sceneReady=false, applied=false;
+    let lastKey='', fitPending=false, fatal=false, timings=[];
+    const perCapture={};
+    // The parent supplies responsive controls. Keep Viser's embedded canvas above its
+    // mobile breakpoint, where its own settings sheet would otherwise obscure the room.
+    new ResizeObserver(([entry])=>{
+      const {width,height}=entry.contentRect;if(!width||!height) return;
+      const scale=Math.min(1,width/640), iframe=$('scene');
+      iframe.style.width=(width/scale)+'px';iframe.style.height=(height/scale)+'px';
+      iframe.style.transform=`scale(${scale})`;
+    }).observe($('scene-view'));
+    const fmt = t => `${Math.floor((t||0)/60)}:${String(Math.floor((t||0)%60)).padStart(2,'0')}`;
+    function message(text,error=false) { status.textContent=text; status.classList.toggle('error',error); }
+    async function post(path, body) {
+      const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const result=await response.json(); if(!response.ok) { const error=new Error(result.error||response.statusText); error.code=response.status; throw error; } return result;
+    }
+    function settings() { return {show_path:$('path').checked, point_size:+$('size').value, crop_enabled:$('crop').checked, crop_direction:$('direction').value, crop_percent:+$('percent').value}; }
+    function showSettings(s) { $('path').checked=s.show_path; $('size').value=s.point_size; $('crop').checked=s.crop_enabled; $('direction').value=s.crop_direction; $('percent').value=s.crop_percent; cropLabels(); }
+    function cropLabels() { $('direction-label').hidden=$('percent-label').hidden=!$('crop').checked; $('percent-value').textContent=$('percent').value+'%'; }
+    function controls() {
+      const ready=sceneReady&&applied&&video.readyState>=2&&!fatal;
+      $('play').disabled=$('restart').disabled=$('seek').disabled=!ready;
+      $('play').textContent=video.paused?'Play':'Pause';
+    }
+    function reached(t) { let a=config.timestamps[capture.value], low=0, high=a.length; while(low<high) { let m=(low+high)>>1; if(a[m]<=t) low=m+1; else high=m; } return low-1; }
+    function requestSync(force=false,t=video.currentTime) {
+      if(!config||fatal) return;
+      const key=capture.value+':'+reached(t)+':'+JSON.stringify(settings());
+      if(!force&&key===lastKey) return;
+      lastKey=key; desired={capture:capture.value,time:t,settings:settings(),sequence:++sequence,session};
+      drain();
+    }
+    async function drain() {
+      if(busy||!desired||!sceneReady||fatal) return;
+      const payload=desired; desired=null; payload.fit=fitPending; fitPending=false; busy=true;
+      const start=performance.now();
+      try {
+        const result=await post('/sync',payload);
+        timings.push({capture:payload.capture,time:payload.time,roundtrip_ms:performance.now()-start,server_ms:result.server_ms});
+        if(timings.length>300) timings.shift();
+        if(payload.sequence===sequence&&payload.capture===capture.value) {
+          applied=true;
+          message(`${capture.value==='before'?'Before':'After'} · ${result.revealed_frames}/${result.frame_count} frames · ${result.visible_points.toLocaleString()} / ${result.display_points.toLocaleString()} display points`);
+          $('empty').hidden=result.visible_points>0;
+          $('empty').textContent=result.empty_crop?'No points remain after this ceiling crop. Reduce the crop or disable Hide ceiling.':'The room will appear as the video reaches the selected reconstruction frames.';
+        }
+      } catch(error) {
+        video.pause(); applied=false; message(error.message,true);
+        if(error.code===409) fatal=true;
+        else {lastKey='';setTimeout(()=>requestSync(true),1000);}
+      } finally { busy=false; controls(); if(desired) drain(); }
+    }
+    function clock(t=video.currentTime) { $('clock').textContent=fmt(t)+' / '+fmt(video.duration); $('seek').value=t||0; }
+    function loadCapture() {
+      video.pause(); applied=false; fatal=false; desired=null; lastKey='';
+      showSettings(perCapture[capture.value]);
+      video.src='/video/'+capture.value; video.load(); video.playbackRate=+$('speed').value;
+      message('Loading '+capture.value+' video…'); $('empty').hidden=false;
+      fitPending=true; requestSync(true,0); controls(); clock(0);
+    }
+    $('play').onclick=async()=>{ try { if(video.paused) await video.play(); else video.pause(); } catch(e) { message('Playback failed: '+e.message,true); } controls(); };
+    $('restart').onclick=()=>{video.pause();video.currentTime=0;requestSync(true,0);clock(0);};
+    $('seek').oninput=()=>{video.currentTime=+$('seek').value;requestSync(true,video.currentTime);clock();};
+    $('speed').onchange=()=>{video.playbackRate=+$('speed').value;};
+    $('fit').onclick=()=>{fitPending=true;requestSync(true);};
+    capture.onchange=loadCapture;
+    for(const id of ['path','size','crop','direction','percent']) $(id).addEventListener('input',()=>{cropLabels();perCapture[capture.value]=settings();requestSync(true);});
+    video.addEventListener('loadedmetadata',()=>{$('seek').max=video.duration;clock();requestSync(true);});
+    for(const event of ['loadeddata','canplay','play','pause','ended','seeked']) video.addEventListener(event,()=>{clock();controls();requestSync(true);});
+    video.addEventListener('error',()=>{video.pause();applied=false;message('Video could not be decoded. Restart the viewer to verify its playback cache.',true);controls();});
+    video.addEventListener('waiting',()=>message('Buffering source video…'));
+    if(video.requestVideoFrameCallback) {
+      const onFrame=(now,meta)=>{clock(meta.mediaTime);requestSync(false,meta.mediaTime);video.requestVideoFrameCallback(onFrame);};
+      video.requestVideoFrameCallback(onFrame);
+    } else {
+      const tick=()=>{if(!video.paused){clock();requestSync();}requestAnimationFrame(tick);}; tick();
+    }
+    async function poll() {
+      try {
+        const response=await fetch('/status');if(!response.ok) throw new Error('Room server unavailable');
+        const result=await response.json();
+        const wasReady=sceneReady;sceneReady=result.ready;
+        if(!sceneReady) {video.pause();applied=false;message('Connecting to the room view…');}
+        else if(!wasReady) {fitPending=true;requestSync(true);}
+        drain();controls();
+      } catch(e) {sceneReady=false;video.pause();applied=false;message('Room connection lost. Reconnecting…',true);controls();}
+      setTimeout(poll,750);
+    }
+    (async()=>{
+      try {
+        config=await post('/session',{});session=config.session;
+        for(const name of config.captures) {capture.add(new Option(name==='before'?'Before':'After',name));perCapture[name]={...config.settings[name]};}
+        capture.value=config.initial;loadCapture();poll();
+      } catch(e) {message('Viewer initialization failed: '+e.message,true);}
+    })();
+    window.syncDiagnostics=()=>({timings:[...timings],sequence,sceneReady,applied});
+  </script>
+</body>
+</html>

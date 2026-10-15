@@ -1,0 +1,5 @@
+# Local saved-run viewers only; no GPU or model runtime.
+numpy>=2,<3
+Pillow>=11,<13
+viser==1.1.1
+av>=16.1,<17
