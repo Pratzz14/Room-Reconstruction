@@ -1,4 +1,4 @@
-"""Prepare, run, verify, package and inspect independent v2 reconstructions."""
+"""Prepare, run, verify, package and inspect independent reconstructions."""
 
 import argparse
 import json
@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2 import core
+from reconstruction import core
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
             core.read_json(args.lock),
         )
     elif args.command in ("run", "worker"):
-        from reconstruction_v2.inference import run, worker
+        from reconstruction.inference import run, worker
 
         if args.command == "worker":
             worker(args.run, args.capture, args.source, args.checkpoint)
@@ -91,7 +91,7 @@ def main():
             name: core.verify_capture(args.run, name) for name in ("before", "after")
         }
     elif args.command in ("pack", "import"):
-        from reconstruction_v2.archive import import_archive, pack
+        from reconstruction.archive import import_archive, pack
 
         result = (
             pack(args.run, args.archive)
@@ -99,12 +99,12 @@ def main():
             else import_archive(args.archive, args.output)
         )
     elif args.command == "view":
-        from reconstruction_v2.viewer import view
+        from reconstruction.viewer import view
 
         view(args.run, args.port, objects=args.objects)
         return 0
     elif args.command == "sync-view":
-        from reconstruction_v2.sync_viewer import synchronized_view
+        from reconstruction.sync_viewer import synchronized_view
 
         synchronized_view(
             args.run,
@@ -115,7 +115,7 @@ def main():
         )
         return 0
     elif args.command == "object-view":
-        from reconstruction_v2.inspection_viewer import object_view
+        from reconstruction.inspection_viewer import object_view
 
         object_view(
             args.run,

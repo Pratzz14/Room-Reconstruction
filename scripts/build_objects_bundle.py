@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2.core import (
+from reconstruction.core import (
     digest,
     read_json,
     safe_path,
@@ -37,9 +37,9 @@ def notebook(bundle_name, output):
     cell(
         "markdown",
         """
-        # v2 object inventories — Steps 2 and 3
+        # Object inventories
         Use a GPU Colab runtime (browser or VS Code extension). Upload the object bundle to
-        **My Drive / Room Reconstruction v2**. It contains saved reconstruction evidence,
+        **My Drive / Room Reconstruction**. It contains saved reconstruction evidence,
         source code and settings; no original videos, credentials or checkpoint weights.
         Before and After remain independent. No VGGT rerun, alignment, change classification or VLM.
         Review the pilot mask overlays before running the full stage.
@@ -51,11 +51,11 @@ def notebook(bundle_name, output):
         from pathlib import Path
         import hashlib, json, os, shutil, subprocess, sys, zipfile, venv
         from google.colab import drive
-        DRIVE = Path('/content/drive/MyDrive/Room Reconstruction v2')
+        DRIVE = Path('/content/drive/MyDrive/Room Reconstruction')
         if not Path('/content/drive/MyDrive').is_dir():
             drive.mount('/content/drive')
         INPUT = DRIVE / BUNDLE_NAME
-        WORK = Path('/content/roomdelta3d_v2_objects')
+        WORK = Path('/content/roomdelta3d_objects')
         PROJECT = WORK / 'project'
         if not INPUT.is_file():
             raise FileNotFoundError(f'Upload the object bundle: {INPUT}')
@@ -175,7 +175,7 @@ def notebook(bundle_name, output):
         """
         from datetime import datetime, timezone
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        ARCHIVE = RESULTS / f'roomdelta3d_v2_objects_{stamp}.zip'
+        ARCHIVE = RESULTS / f'roomdelta3d_objects_{stamp}.zip'
         execute([PYTHON, CLI, 'pack', '--reconstruction', RUN, '--objects', OBJECTS, '--archive', ARCHIVE], 'export')
         destination = DRIVE / ARCHIVE.name
         if destination.exists():
@@ -238,8 +238,8 @@ def build(reconstruction, output, notebook_path):
                 archive.write(safe_path(reconstruction, name), name)
             archive.writestr("archive_receipt.json", json.dumps(receipt))
         sources = [
-            *sorted((PROJECT / "reconstruction_v2").glob("*.py")),
-            *sorted((PROJECT / "reconstruction_v2").glob("*.html")),
+            *sorted((PROJECT / "reconstruction").glob("*.py")),
+            *sorted((PROJECT / "reconstruction").glob("*.html")),
             PROJECT / "scripts/objects.py",
             PROJECT / "scripts/setup_colab.py",
             PROJECT / "scripts/reconstruct.py",
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     parser.add_argument("--reconstruction", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--notebook", type=Path, default=PROJECT / "notebooks/objects_v2_colab.ipynb"
+        "--notebook", type=Path, default=PROJECT / "notebooks/objects_colab.ipynb"
     )
     args = parser.parse_args()
     print(json.dumps(build(args.reconstruction, args.output, args.notebook), indent=2))

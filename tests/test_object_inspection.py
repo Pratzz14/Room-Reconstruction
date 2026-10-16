@@ -15,16 +15,16 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2 import core
-from reconstruction_v2.object_association import consolidate
-from reconstruction_v2.object_contracts import ObjectInventory
-from reconstruction_v2.object_inspection import (
+from reconstruction import core
+from reconstruction.object_association import consolidate
+from reconstruction.object_contracts import ObjectInventory
+from reconstruction.object_inspection import (
     ObjectInspection,
     SavedObjectPanel,
     crop_plane,
 )
-from reconstruction_v2.object_pipeline import run
-from reconstruction_v2.sync_viewer import _SyncState, make_handler
+from reconstruction.object_pipeline import run
+from reconstruction.sync_viewer import _SyncState, make_handler
 from tests.fixtures import PROJECT, completed
 from tests.test_objects import AnalyticModels
 from tests.test_viewer_ceiling import Gui, Handle
@@ -288,7 +288,7 @@ class InspectionTests(unittest.TestCase):
             state.source_frame_points("before", 0), state.points["before"][:1]
         )
         with patch(
-            "reconstruction_v2.sync_viewer.np.load",
+            "reconstruction.sync_viewer.np.load",
             side_effect=AssertionError("cached frame should not reload"),
         ):
             np.testing.assert_array_equal(
@@ -467,17 +467,17 @@ class InspectionTests(unittest.TestCase):
             thread.join()
 
     def test_static_startup_does_not_validate_or_transcode_source_video(self):
-        from reconstruction_v2.inspection_viewer import object_view
+        from reconstruction.inspection_viewer import object_view
 
         with (
-            patch("reconstruction_v2.inspection_viewer.check_viewer_ports"),
-            patch("reconstruction_v2.inspection_viewer.serve_viewer") as serve,
+            patch("reconstruction.inspection_viewer.check_viewer_ports"),
+            patch("reconstruction.inspection_viewer.serve_viewer") as serve,
             patch(
-                "reconstruction_v2.sync_viewer.validate_video_source",
+                "reconstruction.sync_viewer.validate_video_source",
                 side_effect=AssertionError("Video must not be needed"),
             ),
             patch(
-                "reconstruction_v2.sync_viewer.prepare_playback",
+                "reconstruction.sync_viewer.prepare_playback",
                 side_effect=AssertionError("No transcoding"),
             ),
         ):
@@ -505,7 +505,7 @@ class AssociationTests(unittest.TestCase):
             for i in range(len(frames))
         ]
         with patch(
-            "reconstruction_v2.object_association.reprojection",
+            "reconstruction.object_association.reprojection",
             return_value={"samples": 50, "fraction": 1.0},
         ):
             return consolidate(

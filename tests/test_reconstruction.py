@@ -10,9 +10,9 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2 import core
-from reconstruction_v2.archive import import_archive, pack
-from reconstruction_v2.inference import cache_compatible, run, run_lock
+from reconstruction import core
+from reconstruction.archive import import_archive, pack
+from reconstruction.inference import cache_compatible, run, run_lock
 from tests.fixtures import PROJECT, completed, predictions, prepared
 
 

@@ -15,27 +15,27 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image, ImageFilter
 
-from reconstruction_v2.alignment import apply_similarity
-from reconstruction_v2.change_report import (
+from reconstruction.alignment import apply_similarity
+from reconstruction.change_report import (
     build_report,
     event_record,
     pack_report,
     refresh_report,
     verify_report,
 )
-from reconstruction_v2.comparison import ComparisonInventory, run
-from reconstruction_v2.comparison_viewer import ComparisonState, make_comparison_handler
-from reconstruction_v2.core import digest, read_json, write_json
-from reconstruction_v2.object_contracts import ObjectInventory
-from reconstruction_v2.object_pipeline import run as detect
-from reconstruction_v2.region_reference import RegionReferences
-from reconstruction_v2.report_evidence import (
+from reconstruction.comparison import ComparisonInventory, run
+from reconstruction.comparison_viewer import ComparisonState, make_comparison_handler
+from reconstruction.core import digest, read_json, write_json
+from reconstruction.object_contracts import ObjectInventory
+from reconstruction.object_pipeline import run as detect
+from reconstruction.region_reference import RegionReferences
+from reconstruction.report_evidence import (
     EvidenceSelector,
     crop_box,
     depth_visibility,
     sharpness,
 )
-from reconstruction_v2.report_render import (
+from reconstruction.report_render import (
     comparison_views,
     render_html,
     render_markdown,
@@ -219,7 +219,7 @@ class ReportWorkflowTests(unittest.TestCase):
         c, _ = analytic_correspondences()
         cls.comparison = cls.base / "comparison"
         with patch(
-            "reconstruction_v2.comparison.extract_correspondences",
+            "reconstruction.comparison.extract_correspondences",
             return_value=(c, ["room_shell"]),
         ):
             cls.compared = run(

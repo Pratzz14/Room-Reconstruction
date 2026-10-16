@@ -12,18 +12,18 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2.change_review import (
+from reconstruction.change_review import (
     apply_to_display,
     needs_followup,
     run,
     verify,
 )
-from reconstruction_v2.change_stage import saved_changes
-from reconstruction_v2.core import digest, identity, read_json, write_json
-from reconstruction_v2.refinement_gemini import Gemini, RequestTooLarge, exclusive
-from reconstruction_v2.review_analysis import reconcile, validate_finding
-from reconstruction_v2.review_config import configuration, live_limits
-from reconstruction_v2.review_evidence import (
+from reconstruction.change_stage import saved_changes
+from reconstruction.core import digest, identity, read_json, write_json
+from reconstruction.refinement_gemini import Gemini, RequestTooLarge, exclusive
+from reconstruction.review_analysis import reconcile, validate_finding
+from reconstruction.review_config import configuration, live_limits
+from reconstruction.review_evidence import (
     SYSTEM,
     candidate_checks,
     candidate_confirmed,
@@ -75,7 +75,7 @@ class AnalysisTests(unittest.TestCase):
     def test_presence_confirmation_accepts_supplied_alternate_view_not_unseen_or_new_counterpart(
         self,
     ):
-        from reconstruction_v2.review_evidence import supplied_presence_confirmation
+        from reconstruction.review_evidence import supplied_presence_confirmation
 
         index = self.index()
         f = finding(after=None, movement="unclear")
@@ -115,7 +115,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(supplied_presence_confirmation(f, "s1", index, step))
 
     def test_native_gemini_box_order_is_decoded_without_altering_receipt_answer(self):
-        from reconstruction_v2.change_review import _load_findings
+        from reconstruction.change_review import _load_findings
 
         raw = finding()
         for cap in ("before", "after"):
@@ -135,8 +135,8 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(raw, original)
 
     def test_legacy_coordinate_recovery_is_explicit_source_bound_and_replayable(self):
-        from reconstruction_v2.change_review import _load_findings
-        from reconstruction_v2.review_analysis import recover_supplied_pixel_boxes
+        from reconstruction.change_review import _load_findings
+        from reconstruction.review_analysis import recover_supplied_pixel_boxes
 
         row, index = finding(), self.index()
         box = [1200, 120, 1600, 700]
@@ -176,7 +176,7 @@ class AnalysisTests(unittest.TestCase):
             _load_findings([step], index)
 
     def test_local_visual_validation_only_downgrades_with_source_reference(self):
-        from reconstruction_v2.change_review import apply_local_validation
+        from reconstruction.change_review import apply_local_validation
 
         analysis = {
             "changes": {
@@ -707,13 +707,13 @@ class SavedReviewTests(unittest.TestCase):
         cls.fixture.tearDownClass()
 
     def test_offline_prepare_resume_reports_viewer_and_tamper(self):
-        from reconstruction_v2.change_report import (
+        from reconstruction.change_report import (
             build_report,
             pack_report,
             verify_report,
         )
-        from reconstruction_v2.comparison import ComparisonInventory
-        from reconstruction_v2.comparison_viewer import ComparisonState
+        from reconstruction.comparison import ComparisonInventory
+        from reconstruction.comparison_viewer import ComparisonState
 
         f = self.fixture
         output = f.base / "review"
@@ -738,7 +738,7 @@ class SavedReviewTests(unittest.TestCase):
         )
         # A newer renderer must not invalidate the source-bound JSON/image evidence.
         with patch(
-            "reconstruction_v2.report_render.render_html",
+            "reconstruction.report_render.render_html",
             return_value="<p>New report presentation</p>",
         ):
             self.assertEqual(verify(output, f.inventory, f.comparison), pending)
@@ -881,7 +881,7 @@ class SavedReviewTests(unittest.TestCase):
         verify(interrupted_root, f.inventory, f.comparison)
         # Replay a mixed-model review using synthetic provider receipts. Old batches
         # without provider_config keep the original model, including after resume.
-        from reconstruction_v2.change_review import publish
+        from reconstruction.change_review import publish
 
         receipt_root = f.base / "mixed-model-receipts"
         run(f.inventory, f.comparison, receipt_root, prepare_only=True)
@@ -978,7 +978,7 @@ class SavedReviewTests(unittest.TestCase):
         with self.assertRaises((ValueError, FileNotFoundError)):
             verify(receipt_root, f.inventory, f.comparison)
         follow_client = FakeClient(unclear=True)
-        with patch("reconstruction_v2.change_review.has_extra", return_value=True):
+        with patch("reconstruction.change_review.has_extra", return_value=True):
             follow = run(
                 f.inventory,
                 f.comparison,

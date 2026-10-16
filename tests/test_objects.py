@@ -9,15 +9,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from reconstruction_v2 import core
-from reconstruction_v2.object_archive import import_archive, pack
-from reconstruction_v2.object_contracts import ObjectInventory, atomic_move
-from reconstruction_v2.object_geometry import (
+from reconstruction import core
+from reconstruction.object_archive import import_archive, pack
+from reconstruction.object_contracts import ObjectInventory, atomic_move
+from reconstruction.object_geometry import (
     CaptureGeometry,
     geometry_quality,
     voxel_geometry,
 )
-from reconstruction_v2.object_pipeline import run
+from reconstruction.object_pipeline import run
 from tests.fixtures import PROJECT, completed
 
 
@@ -258,7 +258,7 @@ class PublicationTests(unittest.TestCase):
             patch.object(
                 Path, "replace", side_effect=[busy, Path("destination")]
             ) as move,
-            patch("reconstruction_v2.core.time.sleep"),
+            patch("reconstruction.core.time.sleep"),
         ):
             atomic_move(Path("source"), Path("destination"))
             self.assertEqual(move.call_count, 2)
@@ -266,7 +266,7 @@ class PublicationTests(unittest.TestCase):
     def test_permanent_file_error_is_not_suppressed(self):
         with (
             patch.object(Path, "replace", side_effect=OSError("disk error")) as move,
-            patch("reconstruction_v2.core.time.sleep"),
+            patch("reconstruction.core.time.sleep"),
         ):
             with self.assertRaises(OSError):
                 atomic_move(Path("source"), Path("destination"))

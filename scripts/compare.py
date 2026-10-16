@@ -9,14 +9,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reconstruction_v2.alignment import assess_alignment, ransac_similarity
-from reconstruction_v2.change_detection import classify_changes, match_objects
-from reconstruction_v2.core import read_json, write_json
-from reconstruction_v2.object_contracts import ObjectInventory
+from reconstruction.alignment import assess_alignment, ransac_similarity
+from reconstruction.change_detection import classify_changes, match_objects
+from reconstruction.core import read_json, write_json
+from reconstruction.object_contracts import ObjectInventory
 
 
 def _objects(inventory, capture):
-    from reconstruction_v2.comparison import matching_objects
+    from reconstruction.comparison import matching_objects
 
     return matching_objects(inventory, capture)
 
@@ -130,9 +130,9 @@ def main():
     match.add_argument("--position-scale", type=float, default=1.0)
     args = parser.parse_args()
     if args.command in ("review", "verify-review"):
-        from reconstruction_v2.change_review import run as review_run
-        from reconstruction_v2.change_review import verify as verify_review
-        from reconstruction_v2.comparison import load_inventory
+        from reconstruction.change_review import run as review_run
+        from reconstruction.change_review import verify as verify_review
+        from reconstruction.comparison import load_inventory
 
         inventory = load_inventory(args.reconstruction, args.objects, args.refinement)
         result = (
@@ -168,13 +168,13 @@ def main():
         )
         return 2 if result["stopped_reason"] else 0
     if args.command in ("report", "verify-report", "pack-report", "refresh-report"):
-        from reconstruction_v2.change_report import (
+        from reconstruction.change_report import (
             build_report,
             pack_report,
             refresh_report,
             verify_report,
         )
-        from reconstruction_v2.comparison import load_inventory
+        from reconstruction.comparison import load_inventory
 
         inventory = load_inventory(args.reconstruction, args.objects, args.refinement)
         if args.command == "pack-report":
@@ -217,7 +217,7 @@ def main():
         print(json.dumps(result, indent=2))
         return 0
     if args.command in ("run", "verify"):
-        from reconstruction_v2.comparison import load_inventory, run, verify
+        from reconstruction.comparison import load_inventory, run, verify
 
         if args.command == "run":
             report = run(
@@ -282,7 +282,7 @@ def main():
             raise ValueError("Expected an After-to-Before transform")
         transform = record["transform"]
         alignment_status = record["quality"]["status"]
-        from reconstruction_v2.comparison import source_binding
+        from reconstruction.comparison import source_binding
 
         if "sources" in record and record["sources"] != source_binding(inventory):
             raise ValueError("Transform belongs to different source artifacts")

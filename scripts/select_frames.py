@@ -302,7 +302,7 @@ def process(capture, validation_root, output):
     if len(timings) != capture["decoded_frames"]:
         raise ValueError("Timestamp archive count mismatch")
     if capture["orientation_counterclockwise_degrees"] != 0:
-        raise ValueError("This selector requires the validated 0-degree v2 inputs; no implicit orientation transform")
+        raise ValueError("This selector requires the validated 0-degree inputs; no implicit orientation transform")
     directory = output / name
     directory.mkdir()
     (directory / "frames").mkdir()

@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from reconstruction_v2.alignment import (
+from reconstruction.alignment import (
     apply_similarity,
     assess_alignment,
     estimate_similarity,
@@ -10,7 +10,7 @@ from reconstruction_v2.alignment import (
     ransac_similarity,
     transform_bounds,
 )
-from reconstruction_v2.change_detection import classify_changes, match_objects
+from reconstruction.change_detection import classify_changes, match_objects
 
 
 class AlignmentTests(unittest.TestCase):

@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from reconstruction_v2 import core
-from reconstruction_v2.sync import (
+from reconstruction import core
+from reconstruction.sync import (
     FrameTimeline,
     first_observation_frames,
     fit_room,
@@ -23,8 +23,8 @@ from reconstruction_v2.sync import (
     sample_indices,
     validate_video_source,
 )
-from reconstruction_v2.sync_media import byte_range, prepare_playback
-from reconstruction_v2.sync_viewer import _SyncState, make_handler, synchronized_view
+from reconstruction.sync_media import byte_range, prepare_playback
+from reconstruction.sync_viewer import _SyncState, make_handler, synchronized_view
 from tests.fixtures import PROJECT, source_frames
 
 
@@ -227,7 +227,7 @@ class RangeAndHttpTests(unittest.TestCase):
             occupied.bind(("127.0.0.1", 0))
             occupied.listen()
             port = occupied.getsockname()[1]
-            with (patch("reconstruction_v2.sync_viewer.verify_capture", side_effect=AssertionError("Must fail before verification")),
+            with (patch("reconstruction.sync_viewer.verify_capture", side_effect=AssertionError("Must fail before verification")),
                   self.assertRaisesRegex(RuntimeError, "occupied")):
                 synchronized_view(PROJECT, port)
 

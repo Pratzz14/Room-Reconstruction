@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reconstruction_v2 import core, inference
+from reconstruction import core, inference
 from scripts import colab_run
 from scripts.build_colab_bundle import notebook
 from tests.fixtures import prepared, PROJECT

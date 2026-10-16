@@ -6,7 +6,7 @@ try:
 except ImportError:
     torch = None
 
-from reconstruction_v2.inference import bounded_attention
+from reconstruction.inference import bounded_attention
 
 
 @unittest.skipIf(torch is None, "Optional CPU PyTorch is needed for attention arithmetic checks")

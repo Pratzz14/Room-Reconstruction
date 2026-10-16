@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from reconstruction_v2 import core, viewer
+from reconstruction import core, viewer
 from tests.fixtures import PROJECT, completed
 
 

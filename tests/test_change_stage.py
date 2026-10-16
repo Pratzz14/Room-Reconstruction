@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from reconstruction_v2.change_detection import match_objects
-from reconstruction_v2.change_stage import build_changes, frame_cloud_means
+from reconstruction.change_detection import match_objects
+from reconstruction.change_stage import build_changes, frame_cloud_means
 from tests.fixtures import PROJECT
 
 

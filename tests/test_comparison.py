@@ -8,18 +8,18 @@ from unittest.mock import patch
 
 import numpy as np
 
-from reconstruction_v2.alignment import apply_similarity, inverse_similarity
-from reconstruction_v2.change_detection import classify_changes, match_objects
-from reconstruction_v2.comparison import (
+from reconstruction.alignment import apply_similarity, inverse_similarity
+from reconstruction.change_detection import classify_changes, match_objects
+from reconstruction.comparison import (
     ComparisonInventory,
     run,
     transformed_cameras,
     verify,
 )
-from reconstruction_v2.core import digest, read_json, write_json
-from reconstruction_v2.object_contracts import ObjectInventory
-from reconstruction_v2.object_pipeline import run as detect
-from reconstruction_v2.static_alignment import extract_correspondences, fit_static
+from reconstruction.core import digest, read_json, write_json
+from reconstruction.object_contracts import ObjectInventory
+from reconstruction.object_pipeline import run as detect
+from reconstruction.static_alignment import extract_correspondences, fit_static
 from tests.fixtures import PROJECT, completed
 from tests.test_alignment_change import object_record
 from tests.test_objects import AnalyticModels
@@ -105,7 +105,7 @@ class StaticAlignmentTests(unittest.TestCase):
             captures={"before": {"objects": []}, "after": {"objects": []}}
         )
         with patch(
-            "reconstruction_v2.static_alignment.frame_features",
+            "reconstruction.static_alignment.frame_features",
             side_effect=[[f], [other]],
         ):
             c, _ = extract_correspondences(inventory, self.cfg)
@@ -235,7 +235,7 @@ class ComparisonWorkflowTests(unittest.TestCase):
         c, _ = analytic_correspondences()
         output = self.base / "comparison"
         with patch(
-            "reconstruction_v2.comparison.extract_correspondences",
+            "reconstruction.comparison.extract_correspondences",
             return_value=(c, ["room_shell"]),
         ) as extract:
             report = run(self.reconstruction, self.objects, None, output, cfg)
@@ -263,7 +263,7 @@ class ComparisonWorkflowTests(unittest.TestCase):
         report["artifacts"]["changes.json"] = digest(output / "changes.json")
         write_json(output / "comparison.json", report)
         with patch(
-            "reconstruction_v2.comparison.extract_correspondences",
+            "reconstruction.comparison.extract_correspondences",
             side_effect=AssertionError("cache should be reused"),
         ):
             repeated = run(self.reconstruction, self.objects, None, output, cfg)

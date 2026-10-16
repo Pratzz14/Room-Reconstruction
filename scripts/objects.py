@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2.core import read_json
+from reconstruction.core import read_json
 
 
 def main():
@@ -37,11 +37,11 @@ def main():
             p.add_argument("--frames-per-capture", type=int)
     args = parser.parse_args()
     if args.command == "resolve-models":
-        from reconstruction_v2.object_models import resolve_models
+        from reconstruction.object_models import resolve_models
 
         result = resolve_models(args.source, args.output)
     elif args.command == "run":
-        from reconstruction_v2.object_pipeline import run
+        from reconstruction.object_pipeline import run
 
         result = run(
             args.reconstruction,
@@ -55,7 +55,7 @@ def main():
         print(json.dumps(result, indent=2))
         return int(result["status"] == "failed")
     elif args.command == "verify":
-        from reconstruction_v2.object_contracts import ObjectInventory
+        from reconstruction.object_contracts import ObjectInventory
 
         inventory = ObjectInventory(args.reconstruction, args.objects)
         result = {
@@ -68,7 +68,7 @@ def main():
         if not inventory.captures:
             raise ValueError("No completed inventory")
     else:
-        from reconstruction_v2.object_archive import import_archive, pack
+        from reconstruction.object_archive import import_archive, pack
 
         result = (
             pack(args.reconstruction, args.objects, args.archive)

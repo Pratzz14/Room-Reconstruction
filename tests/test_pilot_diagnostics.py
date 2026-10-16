@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from scripts.colab_run import capture_measurement
 from scripts.build_colab_bundle import notebook
-from reconstruction_v2.core import write_json
+from reconstruction.core import write_json
 
 
 class PilotDiagnosticsTests(unittest.TestCase):

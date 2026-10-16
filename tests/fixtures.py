@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2 import core
+from reconstruction import core
 
 PROJECT = Path(__file__).resolve().parents[1]
 

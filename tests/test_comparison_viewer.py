@@ -15,16 +15,16 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2.comparison_viewer import (
+from reconstruction.comparison_viewer import (
     ComparisonState,
     make_comparison_handler,
     readable_explanation,
     uncertainty_messages,
 )
-from reconstruction_v2.core import read_json, write_json
-from reconstruction_v2.object_contracts import ObjectInventory
-from reconstruction_v2.object_pipeline import run
-from reconstruction_v2.region_reference import project_region
+from reconstruction.core import read_json, write_json
+from reconstruction.object_contracts import ObjectInventory
+from reconstruction.object_pipeline import run
+from reconstruction.region_reference import project_region
 from tests.fixtures import PROJECT, completed
 from tests.test_object_inspection import Scene
 from tests.test_objects import AnalyticModels

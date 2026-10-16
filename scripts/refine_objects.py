@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2.core import read_json
-from reconstruction_v2.refinement_evidence import prepare
-from reconstruction_v2.refinement_gemini import (
+from reconstruction.core import read_json
+from reconstruction.refinement_evidence import prepare
+from reconstruction.refinement_gemini import (
     exclusive,
     validate_config,
     validate_output,
@@ -82,8 +82,8 @@ def main():
                 "generation_calls": 0,
             }
         elif args.command == "verify":
-            from reconstruction_v2.object_contracts import ObjectInventory
-            from reconstruction_v2.refined_inventory import RefinedInventory
+            from reconstruction.object_contracts import ObjectInventory
+            from reconstruction.refined_inventory import RefinedInventory
 
             raw = ObjectInventory(
                 args.reconstruction, args.objects, require_complete=True
@@ -97,7 +97,7 @@ def main():
                 "change_status": "not_evaluated",
             }
         else:
-            from reconstruction_v2.refinement import run
+            from reconstruction.refinement import run
 
             report = run(
                 args.reconstruction,

@@ -5,9 +5,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from reconstruction_v2 import core
-from reconstruction_v2.archive import import_archive
-from reconstruction_v2.object_archive import extract_verified
+from reconstruction import core
+from reconstruction.archive import import_archive
+from reconstruction.object_archive import extract_verified
 from scripts.build_objects_bundle import build
 from tests.fixtures import PROJECT, completed
 

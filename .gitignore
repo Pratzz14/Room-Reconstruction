@@ -1,7 +1,5 @@
 /data/
-/docs/*
-!/docs/change_reports.md
-!/docs/image_evidence_and_change_reports_technical_report.md
+/docs/
 /outputs/
 /.venv/
 /checkpoints/

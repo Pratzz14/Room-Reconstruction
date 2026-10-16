@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2.core import artifacts, code_identity, identity, read_json, write_json
-from reconstruction_v2.inference import assert_run_configuration, run
+from reconstruction.core import artifacts, code_identity, identity, read_json, write_json
+from reconstruction.inference import assert_run_configuration, run
 
 
 def pilot_identity(root):

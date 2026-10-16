@@ -7,11 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reconstruction_v2 import core
-from reconstruction_v2.object_inspection import ObjectInspection
-from reconstruction_v2.object_pipeline import run as object_run
-from reconstruction_v2.refined_inventory import InventoryModes, RefinedInventory
-from reconstruction_v2.refinement import (
+from reconstruction import core
+from reconstruction.object_inspection import ObjectInspection
+from reconstruction.object_pipeline import run as object_run
+from reconstruction.refined_inventory import InventoryModes, RefinedInventory
+from reconstruction.refinement import (
     build,
     category_coverage,
     merge_inventory,
@@ -19,8 +19,8 @@ from reconstruction_v2.refinement import (
     run,
     validate_answer,
 )
-from reconstruction_v2.refinement_evidence import prepare, schema
-from reconstruction_v2.refinement_gemini import Gemini, validate_output
+from reconstruction.refinement_evidence import prepare, schema
+from reconstruction.refinement_gemini import Gemini, validate_output
 from tests.fixtures import PROJECT, completed
 from tests.test_objects import AnalyticModels
 
@@ -271,7 +271,7 @@ class RefinementTests(unittest.TestCase):
             before, {p: core.digest(p) for p in self.raw.rglob("*") if p.is_file()}
         )
         with patch(
-            "reconstruction_v2.refinement.Gemini.generate",
+            "reconstruction.refinement.Gemini.generate",
             side_effect=AssertionError("Provider must not be called"),
         ):
             rebuilt = run(

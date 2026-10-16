@@ -10,18 +10,18 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from reconstruction_v2.archive import pack
-from reconstruction_v2.core import digest, read_json, write_json
+from reconstruction.archive import pack
+from reconstruction.core import digest, read_json, write_json
 
 
 def project_files(project):
-    return list((project / "reconstruction_v2").glob("*.py")) + [
+    return list((project / "reconstruction").glob("*.py")) + [
         project / "scripts" / name for name in ("reconstruct.py", "setup_colab.py", "colab_run.py")] + [
         project / "configs/reconstruction.json", project / "configs/models.lock.json",
         project / "requirements-reconstruction.txt", project / "reference/vggt_load_fn.py"]
 
 
-def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
+def notebook(bundle_name="roomdelta3d_colab_ready.zip"):
     project = Path(__file__).resolve().parents[1]
     expected_files = {p.relative_to(project).as_posix(): digest(p) for p in project_files(project)}
     cells = []
@@ -32,10 +32,10 @@ def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
         if kind == "code":
             value.update({"execution_count": None, "outputs": []})
         cells.append(value)
-    cell("markdown", """# Room Reconstruction v2 — independent VGGT reconstruction
+    cell("markdown", """# Room Reconstruction — independent VGGT reconstruction
 
     In VS Code, open this notebook and select **Select Kernel → Colab → New Colab Server**, choosing a GPU server.
-    Put `__BUNDLE_NAME__` in **My Drive / Room Reconstruction v2** before running the first cell.
+    Put `__BUNDLE_NAME__` in **My Drive / Room Reconstruction** before running the first cell.
     The first cell mounts Drive, copies the ZIP to local runtime storage, and verifies its contents.
     It contains only the reconstruction code/configuration and the 32 Before + 30 After selected PNGs/model inputs.
     No videos, Gemini credentials, VLM prompts, evaluation labels or model checkpoints are included.
@@ -67,16 +67,16 @@ def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
         print('Active project matches this notebook:', len(EXPECTED_PROJECT_FILES), 'verified files')
 
     # Edit this folder only if you put the ZIP elsewhere in My Drive.
-    DRIVE_FOLDER = Path('/content/drive/MyDrive/Room Reconstruction v2')
+    DRIVE_FOLDER = Path('/content/drive/MyDrive/Room Reconstruction')
     if not Path('/content/drive/MyDrive').is_dir():
         drive.mount('/content/drive')  # Complete the extension's Google authorization prompt.
     drive_bundle = DRIVE_FOLDER / __BUNDLE_NAME_LITERAL__
     if not drive_bundle.is_file():
         raise FileNotFoundError(f'Put the prepared ZIP here, or edit DRIVE_FOLDER: {drive_bundle}')
-    BUNDLE_ROOT = Path('/content/roomdelta3d_v2_bundle')
+    BUNDLE_ROOT = Path('/content/roomdelta3d_bundle')
     if BUNDLE_ROOT.exists():
         raise RuntimeError('Bundle directory already exists. Reuse the subsequent cells on this runtime, or start a fresh runtime.')
-    bundle_path = Path('/content/roomdelta3d_v2_colab_ready.zip')
+    bundle_path = Path('/content/roomdelta3d_colab_ready.zip')
     shutil.copyfile(drive_bundle, bundle_path)
     BUNDLE_ROOT.mkdir()
     with zipfile.ZipFile(bundle_path) as bundle:
@@ -103,7 +103,7 @@ def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
         with (BUNDLE_ROOT / name).open('rb') as handle:
             assert hashlib.file_digest(handle, 'sha256').hexdigest() == expected, name
     PROJECT = BUNDLE_ROOT / 'project'
-    WORKSPACE = Path('/content/roomdelta3d_v2_workspace')
+    WORKSPACE = Path('/content/roomdelta3d_workspace')
     RUN = WORKSPACE / 'reconstruction'
     verify_active_project()
     print('Verified Drive bundle:', drive_bundle, 'Files:', len(receipt['files']))
@@ -231,7 +231,7 @@ def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
     Download that ZIP from Drive, import it locally using `scripts/reconstruct.py import`, then run `verify`, `preview`, or `view`.
     Drive persistence occurs after this cell finishes; interrupted inference stays in the current runtime until explicitly saved.
     """)
-    cell("code", """RESULTS = WORKSPACE / 'roomdelta3d_v2_reconstruction.zip'
+    cell("code", """RESULTS = WORKSPACE / 'roomdelta3d_reconstruction.zip'
     if RESULTS.exists():
         raise RuntimeError('Results archive already exists; choose a new RESULTS filename to preserve it.')
     run_logged([PYTHON, CLI, 'pack', '--run', str(RUN), '--archive', str(RESULTS)], 'pack')
@@ -257,14 +257,14 @@ def notebook(bundle_name="roomdelta3d_v2_colab_ready.zip"):
     print('SHA-256:', actual)
     """)
     return {"nbformat": 4, "nbformat_minor": 5, "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
-            "language_info": {"name": "python"}, "colab": {"name": "reconstruction_v2_colab.ipynb"}}, "cells": cells}
+            "language_info": {"name": "python"}, "colab": {"name": "reconstruction_colab.ipynb"}}, "cells": cells}
 
 
 def main():
     project = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, default=project / "outputs/reconstruction")
-    parser.add_argument("--output", type=Path, default=project / "outputs/roomdelta3d_v2_colab_ready.zip")
+    parser.add_argument("--output", type=Path, default=project / "outputs/roomdelta3d_colab_ready.zip")
     parser.add_argument("--notebook-only", action="store_true", help="Refresh notebook without rebuilding or replacing the prepared ZIP")
     args = parser.parse_args()
     if args.output.exists() and not args.notebook_only:
@@ -275,9 +275,9 @@ def main():
     for cell in nb["cells"]:
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), cell["id"], "exec")
-    write_json(notebooks / "reconstruction_v2_colab.ipynb", nb)
+    write_json(notebooks / "reconstruction_colab.ipynb", nb)
     if args.notebook_only:
-        print(f"Updated notebook: {notebooks / 'reconstruction_v2_colab.ipynb'}")
+        print(f"Updated notebook: {notebooks / 'reconstruction_colab.ipynb'}")
         return
     allowed = project_files(project)
     scratch = project / "outputs/.bundle_work"
@@ -299,8 +299,8 @@ def main():
             bundle.write(temporary / "bundle_receipt.json", "bundle_receipt.json")
         staging.replace(args.output)
     write_json(args.output.with_suffix(".receipt.json"), {"bundle": str(args.output.resolve()), "sha256": digest(args.output),
-                                                        "bytes": args.output.stat().st_size, "included_files": list(names), "notebook": str(notebooks / "reconstruction_v2_colab.ipynb")})
-    print(json.dumps({"bundle": str(args.output), "megabytes": round(args.output.stat().st_size / 1024**2, 2), "notebook": str(notebooks / "reconstruction_v2_colab.ipynb")}, indent=2))
+                                                        "bytes": args.output.stat().st_size, "included_files": list(names), "notebook": str(notebooks / "reconstruction_colab.ipynb")})
+    print(json.dumps({"bundle": str(args.output), "megabytes": round(args.output.stat().st_size / 1024**2, 2), "notebook": str(notebooks / "reconstruction_colab.ipynb")}, indent=2))
 
 
 if __name__ == "__main__":
