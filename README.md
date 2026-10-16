@@ -12,42 +12,63 @@ GPU inference runs in Colab; comparison and inspection run locally.
 ## Results
 
 ### Changes visualizer
-
 Compare linked Before/After scenes and inspect each object's change evidence.
-
 ![Changes visualizer demo](assets/demos/changes-visualizer.gif)
 
 ### Object visualizer
-
 Select an object to highlight its geometry and inspect its supporting photo.
-
 ![Object visualizer demo](assets/demos/object-visualizer.gif)
 
 ### Reconstruction replay
-
 Replay the recording as precomputed room geometry appears at its supporting timestamps.
-
 ![Reconstruction replay demo](assets/demos/reconstruction-replay.gif)
 
 ## Architecture and design choices
 
-```text
-Videos → frame selection → independent 3D reconstruction → object inventories
-       → alignment → identity matching → change proposals → viewers and reports
+The pipeline separates reconstruction, object identity, and change reasoning into
+inspectable stages. Each change proposal retains the source observations needed
+to understand how it was produced.
+
+```mermaid
+flowchart TD
+    A["BEFORE video"] --> C["Video validation and frame selection"]
+    B["AFTER video"] --> C
+    C --> D["VGGT: depth, cameras, 3D geometry"]
+    D --> E["Two independent 3D room reconstructions"]
+    C --> F["Grounding DINO: object detection"]
+    F --> G["SAM 2.1: object segmentation"]
+    G --> H["DINOv2: appearance features"]
+    E --> I["Lift 2D masks into 3D"]
+    G --> I
+    H --> J["Within-capture object association"]
+    I --> J
+    J --> K["Before and After object inventories"]
+    K -.-> L["Gemini 3.1 Flash-Lite: semantic refinement (optional)"]
+    E --> M["Sim(3): align both rooms"]
+    K --> M
+    L -.-> M
+    K --> N["Cross-capture identity matching"]
+    L -.-> N
+    M --> N
+    N --> O["Change classification"]
+    O --> P["Source-linked image evidence"]
+    P -.-> S["Gemini: image-based change review (optional)"]
+    P --> Q["JSON, Markdown and HTML reports"]
+    S -.-> Q
+    Q --> R["Interactive 3D comparison viewer"]
 ```
+
 
 | Stage | Purpose | Tools |
 |---|---|---|
-| Frame selection | Preserve timestamps and select sharp, overlapping views. | PyAV, OpenCV ORB |
-| Reconstruction | Predict depth and cameras; lift pixels into traceable 3D points. | VGGT-1B, PyTorch, NumPy |
-| Object inventory | Detect, segment, and associate objects across views. | Grounding DINO, SAM 2.1, DINOv2, SciPy |
-| Alignment | Fit After into Before using fixed structures and validate held-out support. | OpenCV SIFT, RANSAC, NumPy SVD |
-| Change detection | Match identities globally and classify movement or presence changes. | SciPy linear assignment, NumPy |
-| Optional visual review | Refine labels and review changes against source images. | Gemini |
-| Inspection and export | Show interactive scenes, replay, and image reports. | Viser, PyAV, HTML/CSS/JavaScript |
+| Frame selection | Select sharp, overlapping views while preserving source timestamps. | OpenCV |
+| Reconstruction | Predict depth and cameras, then build colored point clouds. | VGGT-1B |
+| Object inventory | Detect and segment objects, then associate them across views. | Grounding DINO, SAM 2.1, DINOv2 |
+| Alignment | Estimate relative scale, rotation, and translation from fixed structures. | OpenCV |
+| Change detection | Match identities globally and classify movement or presence changes. | SciPy |
+| Optional visual review | Refine labels and review changes against source images. | Gemini 3.1 Flash-Lite |
+| Inspection and export | Explore objects, compare scenes, replay recordings, and export reports. | Viser |
 
-Large moves can retain one identity. Ambiguous evidence remains uncertain, and
-distances remain relative to the reconstruction.
 
 ## Setup
 
