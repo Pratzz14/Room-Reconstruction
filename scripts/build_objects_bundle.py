@@ -94,6 +94,12 @@ def notebook(bundle_name, output):
         "code",
         """
         from collections import deque
+        # Keep object-model dependencies inside this notebook's isolated GPU setup.
+        OBJECT_PACKAGES = [
+            'torch==2.8.0', 'torchvision==0.23.0', 'transformers==5.13.0',
+            'huggingface-hub>=1.0,<2', 'safetensors>=0.6,<1',
+            'numpy>=2,<3', 'Pillow>=11,<13', 'scipy>=1.14,<2',
+        ]
         def execute(args, name):
             logs = WORK / 'logs'; logs.mkdir(exist_ok=True)
             tail = deque(maxlen=60)
@@ -115,7 +121,7 @@ def notebook(bundle_name, output):
         execute([PYTHON, '-m', 'pip', 'install', '--upgrade', 'pip==25.2'], 'pip-setup')
         execute([PYTHON, '-m', 'pip', 'install', 'torch==2.8.0', 'torchvision==0.23.0',
                  '--index-url', 'https://download.pytorch.org/whl/cu126'], 'torch-setup')
-        execute([PYTHON, '-m', 'pip', 'install', '-r', PROJECT / 'requirements-objects.txt'], 'objects-setup')
+        execute([PYTHON, '-m', 'pip', 'install', *OBJECT_PACKAGES], 'objects-setup')
         execute([PYTHON, '-c', 'import torch; assert torch.cuda.is_available(), "Select a GPU runtime"; print(torch.__version__, torch.cuda.get_device_name())'], 'gpu-check')
         RUN = WORK / 'reconstruction'; RESULTS = WORK / 'results'; RESULTS.mkdir(exist_ok=True)
         CLI = PROJECT / 'scripts/objects.py'
@@ -245,7 +251,6 @@ def build(reconstruction, output, notebook_path):
             PROJECT / "scripts/reconstruct.py",
             PROJECT / "configs/objects.json",
             PROJECT / "configs/objects.models.lock.json",
-            PROJECT / "requirements-objects.txt",
         ]
         hashes = {
             "project/" + p.relative_to(PROJECT).as_posix(): digest(p) for p in sources

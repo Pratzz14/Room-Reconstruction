@@ -62,9 +62,9 @@ $rdPython = (Resolve-Path '.venv/Scripts/python.exe').Path
 ```
 
 `requirements.txt` covers local video processing, viewing, refinement, and CPU
-comparison. GPU inference uses isolated Colab environments with
-`requirements-reconstruction.txt` and `requirements-objects.txt`; their model
-stacks require incompatible Hugging Face Hub versions.
+comparison. Each Colab notebook installs its own GPU dependencies in its setup
+cell. The two GPU environments remain isolated because their model stacks require
+incompatible Hugging Face Hub versions.
 
 ### 2. Add the source recordings
 

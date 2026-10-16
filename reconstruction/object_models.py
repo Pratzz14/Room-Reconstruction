@@ -63,7 +63,7 @@ class ObjectModels:
                 self.runtime["packages"][name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:
                 raise RuntimeError(
-                    "Object inference requires the isolated requirements-objects.txt environment"
+                    "Run the object notebook's GPU setup cell before object inference"
                 ) from None
         if lock.get("status") != "resolved" or any(
             not re.fullmatch(r"[0-9a-f]{40}", m["revision"]) or not m.get("files")

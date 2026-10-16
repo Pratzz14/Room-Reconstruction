@@ -1,8 +1,0 @@
-numpy==2.2.6
-Pillow==12.3.0
-scipy==1.16.2
-viser==1.1.1
-huggingface-hub==0.34.4
-safetensors==0.6.2
-einops==0.8.1
-psutil==7.0.0

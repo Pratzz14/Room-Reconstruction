@@ -18,7 +18,7 @@ def project_files(project):
     return list((project / "reconstruction").glob("*.py")) + [
         project / "scripts" / name for name in ("reconstruct.py", "setup_colab.py", "colab_run.py")] + [
         project / "configs/reconstruction.json", project / "configs/models.lock.json",
-        project / "requirements-reconstruction.txt", project / "reference/vggt_load_fn.py"]
+        project / "reference/vggt_load_fn.py"]
 
 
 def notebook(bundle_name="roomdelta3d_colab_ready.zip"):
@@ -115,6 +115,12 @@ def notebook(bundle_name="roomdelta3d_colab_ready.zip"):
     cell("code", """import os
     from collections import deque
 
+    # This notebook owns its GPU environment; PyTorch/CUDA pins come from models.lock.json.
+    RECONSTRUCTION_PACKAGES = [
+        'numpy==2.2.6', 'Pillow==12.3.0', 'scipy==1.16.2', 'viser==1.1.1',
+        'huggingface-hub==0.34.4', 'safetensors==0.6.2', 'einops==0.8.1', 'psutil==7.0.0',
+    ]
+
     def run_logged(command, label):
         # Pipe child output explicitly so VS Code receives it through notebook stdout.
         log_directory = WORKSPACE / 'logs'
@@ -136,7 +142,8 @@ def notebook(bundle_name="roomdelta3d_colab_ready.zip"):
         print(f'{label}: completed', flush=True)
 
     verify_active_project()
-    run_logged([sys.executable, str(PROJECT / 'scripts/setup_colab.py'), '--workspace', str(WORKSPACE)], 'setup')
+    run_logged([sys.executable, str(PROJECT / 'scripts/setup_colab.py'), '--workspace', str(WORKSPACE),
+                '--runtime-packages', *RECONSTRUCTION_PACKAGES], 'setup')
     PYTHON = str(WORKSPACE / 'venv/bin/python')
     CLI = str(PROJECT / 'scripts/reconstruct.py')
     if not RUN.exists():

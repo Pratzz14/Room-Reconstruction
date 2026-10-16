@@ -77,6 +77,8 @@ print(json.dumps(result, indent=2))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--runtime-packages", nargs="+", required=True,
+                        help="GPU dependencies supplied by the notebook setup cell")
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
     workspace = args.workspace.resolve()
@@ -95,7 +97,7 @@ def main():
     subprocess.run([str(python), "-m", "pip", "install", "--upgrade", PIP_REQUIREMENT], check=True)
     subprocess.run([str(python), "-m", "pip", "install", f"torch=={lock['torch']}", f"torchvision=={lock['torchvision']}",
                     "--index-url", lock["torch_wheel_index"]], check=True)
-    subprocess.run([str(python), "-m", "pip", "install", "-r", str(project / "requirements-reconstruction.txt")], check=True)
+    subprocess.run([str(python), "-m", "pip", "install", *args.runtime_packages], check=True)
     source = workspace / "vggt"
     if not source.exists():
         subprocess.run(["git", "clone", lock["source_repository"], str(source)], check=True)

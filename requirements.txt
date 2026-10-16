@@ -1,5 +1,5 @@
 # Local saved-result viewing, refinement, and CPU comparison.
-# GPU inference uses the separate requirements-reconstruction.txt and requirements-objects.txt.
+# Each Colab notebook installs its own isolated GPU dependencies in its setup cell.
 numpy>=2,<3
 Pillow>=11,<13
 viser==1.1.1
