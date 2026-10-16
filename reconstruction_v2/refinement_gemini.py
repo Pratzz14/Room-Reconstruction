@@ -10,8 +10,18 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
+from PIL import Image
 
 from .core import digest, identity, read_json, write_json
+
+
+class RequestTooLarge(ValueError):
+    """Preflight rejected a request before generation; safe to split evidence."""
+
+
+def project_cache_root():
+    """A different output/source directory must not reset this checkout's quota ledger."""
+    return Path(__file__).resolve().parents[1] / "outputs" / "refinement_cache"
 
 
 @contextmanager
@@ -33,6 +43,10 @@ def exclusive(path):
 
 
 def validate_config(config):
+    if config.get("version") == "change-review-v1":
+        from .review_config import configuration
+
+        return configuration(config)
     if (
         config.get("version") != "refinement-v1"
         or config.get("model") != "gemini-3.1-flash-lite"
@@ -121,13 +135,12 @@ class Gemini:
         transport=None,
         clock=time.time,
         sleep=time.sleep,
+        cache_root=None,
     ):
         self.output, self.config = Path(output), validate_config(config)
         self.cache = (
-            self.output.parent
-            / "refinement_cache"
-            / identity(config["project_scope"])[:16]
-        )
+            Path(cache_root) if cache_root else self.output.parent / "refinement_cache"
+        ) / identity(config["project_scope"])[:16]
         self.cache.mkdir(parents=True, exist_ok=True)
         self.transport = transport or requests.post
         self.clock, self.sleep = clock, sleep
@@ -158,8 +171,14 @@ class Gemini:
         )
 
     def _send(self, method, payload, tokens=0):
-        key = self._credential()  # Missing credentials never consume an attempt.
         cfg = self.config
+        review = cfg["version"] == "change-review-v1"
+        if review:
+            from .review_config import live_limits
+
+            limits = live_limits(cfg, self.clock())
+            cfg = {**cfg, **limits}
+        key = self._credential()  # Missing credentials never consume an attempt.
         with exclusive(self.cache / ".quota.lock"):
             ledger_path = self.cache / "quota.json"
             entries = read_json(ledger_path) if ledger_path.exists() else []
@@ -167,7 +186,8 @@ class Gemini:
             entries = [e for e in entries if now - e["time"] < 172800]
             daily = [e for e in entries if self._day(e["time"]) == self._day(now)]
             if (
-                sum(e["method"] == "generateContent" for e in daily)
+                not review
+                and sum(e["method"] == "generateContent" for e in daily)
                 >= cfg["daily_generation_cap"]
             ):
                 raise ValueError(
@@ -175,22 +195,38 @@ class Gemini:
                 )
             if len(daily) >= cfg["requests_per_day"]:
                 raise ValueError("Local daily API request cap reached")
-            if method == "generateContent":
-                budget_path = self.output / "budget.json"
-                budget = (
-                    read_json(budget_path)
-                    if budget_path.exists()
-                    else {"generation_attempts": 0}
+            if (
+                review
+                and sum(e["time"] >= cfg["quota_verified_at"] for e in daily)
+                >= cfg["remaining_requests"]
+            ):
+                raise ValueError(
+                    "Verified remaining daily allowance exhausted; save and resume with a refreshed snapshot"
                 )
-                if budget["generation_attempts"] >= cfg["max_generation_attempts"]:
-                    raise ValueError(
-                        "Analysis generation attempt budget exhausted (including failures)"
-                    )
+            budget_path = self.output / "budget.json"
+            budget = (
+                read_json(budget_path)
+                if budget_path.exists()
+                else {"generation_attempts": 0}
+            )
+            if (
+                method == "generateContent"
+                and not review
+                and budget["generation_attempts"] >= cfg["max_generation_attempts"]
+            ):
+                raise ValueError(
+                    "Analysis generation attempt budget exhausted (including failures)"
+                )
             # All calls count toward local RPM; generation input tokens are reserved before sending.
             wait = 0.0
             recent = [e for e in entries if now - e["time"] < 60]
             if len(recent) >= cfg["requests_per_minute"]:
-                wait = max(wait, min(e["time"] for e in recent) + 65 - now)
+                wait = max(
+                    wait,
+                    sorted(e["time"] for e in recent)[-int(cfg["requests_per_minute"])]
+                    + 65
+                    - now,
+                )
             if method == "generateContent":
                 previous = [e["time"] for e in entries if e["method"] == method]
                 if previous:
@@ -207,10 +243,26 @@ class Gemini:
                 deadline = self.clock() + wait
                 while self.clock() < deadline:
                     self.sleep(min(1.0, deadline - self.clock()))
+            if review:
+                live_limits(self.config, self.clock())
             if method == "generateContent":
                 budget["generation_attempts"] += 1
-                write_json(budget_path, budget)
-            entries.append({"time": self.clock(), "method": method, "tokens": tokens})
+                budget["generation_input_tokens"] = (
+                    budget.get("generation_input_tokens", 0) + tokens
+                )
+            else:
+                budget["token_count_attempts"] = (
+                    budget.get("token_count_attempts", 0) + 1
+                )
+            write_json(budget_path, budget)
+            entries.append(
+                {
+                    "time": self.clock(),
+                    "method": method,
+                    "tokens": tokens,
+                    "model": cfg["model"],
+                }
+            )
             write_json(ledger_path, entries)
             if method == "generateContent":
                 self.generation_calls += 1
@@ -240,6 +292,7 @@ class Gemini:
             return result
 
     def generate(self, system, prompt, schema, images, *, retry_failed=False):
+        images = [Path(p) for p in images]
         request_identity = identity(
             [
                 self.config["model"],
@@ -250,13 +303,48 @@ class Gemini:
                 self.config["max_output_tokens"],
             ]
         )
+        with exclusive(self.cache / (request_identity + ".lock")):
+            return self._generate(
+                system,
+                prompt,
+                schema,
+                images,
+                retry_failed=retry_failed,
+                request_identity=request_identity,
+            )
+
+    def _generate(
+        self, system, prompt, schema, images, *, retry_failed, request_identity
+    ):
         receipt_path = self.output / "requests" / (request_identity + ".json")
         shared = self.cache / (request_identity + ".json")
+        attempt = self.cache / (request_identity + ".attempt.json")
         if shared.exists():
             cached = read_json(shared)
             self.cache_hits += 1
             write_json(receipt_path, {**cached, "cache_hit": True})
             return cached["answer"]
+        if retry_failed:
+            for previous_path in (receipt_path, attempt):
+                if previous_path.exists():
+                    previous = read_json(previous_path)
+                    if previous.get("status") != "completed":
+                        write_json(
+                            self.output
+                            / "requests"
+                            / "attempts"
+                            / (
+                                request_identity
+                                + "_"
+                                + identity(previous)[:16]
+                                + ".json"
+                            ),
+                            previous,
+                        )
+        if attempt.exists() and not retry_failed:
+            raise ValueError(
+                "Previous request failed or has unknown outcome in the shared cache; explicitly use --retry-failed"
+            )
         if receipt_path.exists() and not retry_failed:
             previous = read_json(receipt_path)
             if previous.get("status") != "completed":
@@ -265,7 +353,8 @@ class Gemini:
                 )
         budget_path = self.output / "budget.json"
         if (
-            budget_path.exists()
+            self.config["version"] != "change-review-v1"
+            and budget_path.exists()
             and read_json(budget_path)["generation_attempts"]
             >= self.config["max_generation_attempts"]
         ):
@@ -274,10 +363,14 @@ class Gemini:
             )
         parts = [{"text": prompt}]
         for path in images:
+            with Image.open(path) as image:
+                mime = Image.MIME.get(image.format)
+            if mime not in ("image/jpeg", "image/png", "image/webp"):
+                raise ValueError("Unsupported evidence image format")
             parts.append(
                 {
                     "inlineData": {
-                        "mimeType": "image/jpeg",
+                        "mimeType": mime,
                         "data": base64.b64encode(path.read_bytes()).decode(),
                     }
                 }
@@ -293,7 +386,7 @@ class Gemini:
             },
         }
         if len(json.dumps(payload).encode()) > 19_000_000:
-            raise ValueError(
+            raise RequestTooLarge(
                 "Prepared inline request exceeds the 19 MB safety limit; no evidence was dropped"
             )
         token_path = self.cache / (request_identity + ".tokens.json")
@@ -301,19 +394,58 @@ class Gemini:
             count = read_json(token_path)["totalTokens"]
         else:
             # Count the exact generation request, including system/schema configuration.
-            count_result = self._send(
-                "countTokens",
+            write_json(
+                receipt_path,
                 {
-                    "generateContentRequest": {
-                        "model": "models/" + self.config["model"],
-                        **payload,
-                    }
+                    "identity": request_identity,
+                    "model": self.config["model"],
+                    "status": "preflight_started",
+                    "generation_sent": False,
+                    "cache_hit": False,
                 },
             )
+            write_json(attempt, read_json(receipt_path))
+            try:
+                count_result = self._send(
+                    "countTokens",
+                    {
+                        "generateContentRequest": {
+                            "model": "models/" + self.config["model"],
+                            **payload,
+                        }
+                    },
+                )
+            except Exception as exc:
+                write_json(
+                    receipt_path,
+                    {
+                        "identity": request_identity,
+                        "model": self.config["model"],
+                        "status": "failed",
+                        "generation_sent": False,
+                        "cache_hit": False,
+                        "error": self._clean(str(exc)),
+                    },
+                )
+                write_json(attempt, read_json(receipt_path))
+                raise
             count = count_result["totalTokens"]
             write_json(token_path, {"totalTokens": count})
-        if not isinstance(count, int) or count > self.config["max_input_tokens"]:
-            raise ValueError(
+        ceiling = self.config["max_input_tokens"]
+        if (
+            self.config["version"] == "change-review-v1"
+            and self.config["input_tokens_per_minute"]
+        ):
+            ceiling = min(ceiling, int(self.config["input_tokens_per_minute"] * 0.45))
+        if (
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+            or count > ceiling
+        ):
+            attempt.unlink(missing_ok=True)
+            receipt_path.unlink(missing_ok=True)
+            raise RequestTooLarge(
                 f"Input token count {count} exceeds configured ceiling; no generation sent"
             )
         print(
@@ -329,6 +461,8 @@ class Gemini:
             "started": self.clock(),
         }
         write_json(receipt_path, receipt)
+        write_json(attempt, receipt)
+        calls_before = self.generation_calls
         try:
             result = self._send("generateContent", payload, tokens=count)
             receipt.update(response=result, usage=result.get("usageMetadata", {}))
@@ -345,11 +479,17 @@ class Gemini:
                     if p.get("text") and not p.get("thought")
                 )
             )
-            receipt.update(status="completed", answer=answer)
+            receipt.update(status="completed", answer=answer, generation_sent=True)
             write_json(receipt_path, receipt)
             write_json(shared, receipt)
+            attempt.unlink(missing_ok=True)
             return answer
         except Exception as exc:
-            receipt.update(status="failed", error=self._clean(str(exc)))
+            receipt.update(
+                status="failed",
+                error=self._clean(str(exc)),
+                generation_sent=self.generation_calls > calls_before,
+            )
             write_json(receipt_path, receipt)
+            write_json(attempt, receipt)
             raise

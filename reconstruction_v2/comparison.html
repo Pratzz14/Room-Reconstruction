@@ -23,6 +23,7 @@
   <main>
     <aside class="sidebar" aria-label="Shared objects">
       <h2>Objects</h2><a id="report-link" href="/report" hidden style="color:#a9dfff">Open change report ↗</a><div id="counts" class="muted"></div>
+      <details id="uncertainty-overview" hidden class="muted"><summary>Why are objects uncertain?</summary><p>Main blocker for each object; selecting an object shows its evidence.</p><ul id="uncertainty-reasons"></ul></details>
       <input id="search" type="search" aria-label="Search objects" placeholder="Search object name">
       <select id="filter" aria-label="Change filter"><option value="all">All changes</option><option>moved</option><option>added</option><option>removed</option><option>unchanged</option><option>uncertain</option></select>
       <select id="object-list" size="8" aria-label="Shared object list"></select>
@@ -49,7 +50,7 @@
   <dialog id="frame-modal" aria-label="Enlarged supporting frame"><div class="actions"><strong id="modal-title"></strong><button id="modal-close">Close</button></div><img id="modal-image" alt="Enlarged supporting source frame"><p id="modal-caption"></p></dialog>
   <script>
     const $=id=>document.getElementById(id), captures=['before','after'];
-    let session=null,sequence=0,items=[],selected=null,busy=false,pending=null,fatal=false,lastSnapshot=null;
+    let session=null,sequence=0,items=[],aliases={},selected=null,busy=false,pending=null,fatal=false,lastSnapshot=null;
     const popupOpen={before:false,after:false}, frameKeys={before:null,after:null};
     function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);}
     async function post(path,payload){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),v=await r.json();if(!r.ok){const e=new Error(v.error||'Request failed');e.code=r.status;throw e;}return v;}
@@ -58,7 +59,7 @@
     function render(snapshot){
       lastSnapshot=snapshot;const item=snapshot.selected;
       $('show-frames').disabled=!item;
-      $('selection-detail').textContent=item?`${item.label}\n${item.type} · ${item.trust}\n${item.explanation}${item.status==='ambiguous'?'\nPossible identity match: the correspondence remains uncertain.':''}`:'Select an object to highlight its location and open the supporting frames.';
+      $('selection-detail').textContent=item?`${item.label}\n${item.type} · ${item.trust}\n${item.explanation}${item.review_status?'\nReview: '+item.review_status+'\nOriginal proposal: '+item.original_proposals.map(p=>p.type).join(', '):''}${item.status==='ambiguous'?'\nPossible identity match: the correspondence remains uncertain.':''}`:'Select an object to highlight its location and open the supporting frames.';
       for(const c of captures){
         const view=snapshot.views[c],side=item&&item.sides[c],inspection=view.inspection,reference=snapshot.region_references&&snapshot.region_references[c],source=side?inspection&&inspection.source_frame:reference&&reference.selected;
         $(c+'-ready').textContent=view.ready?'Ready':'Connecting…';
@@ -87,9 +88,9 @@
     }
     $('modal-close').onclick=()=>$('frame-modal').close();
     async function poll(){try{const r=await fetch('/status');if(!r.ok)throw new Error('Room server unavailable');const s=await r.json();for(const c of captures)$(c+'-ready').textContent=s.views[c].ready?'Ready':'Connecting…';}catch(e){message(e.message,true);}if(!fatal)setTimeout(poll,1000);}
-    function selectHash(){if(!session||!location.hash.startsWith('#event='))return;let id;try{id=decodeURIComponent(location.hash.slice(7));}catch{message('Invalid event link',true);return;}if(!items.some(i=>i.shared_id===id)){message('Event not found in this comparison',true);return;}selected=id;$('search').value='';$('filter').value='all';filterObjects();for(const c of captures){popupOpen[c]=true;frameKeys[c]=null;}request({select:id,focus:true});}
+    function selectHash(){if(!session||!location.hash.startsWith('#event='))return;let id;try{id=decodeURIComponent(location.hash.slice(7));}catch{message('Invalid event link',true);return;}if(!items.some(i=>i.shared_id===id)){const linked=aliases[id]||[];if(linked.length===1)id=linked[0];else{message(linked.length?'This original proposal now belongs to multiple identities; select an object from the list.':'Event not found in this comparison',true);return;}}selected=id;$('search').value='';$('filter').value='all';filterObjects();for(const c of captures){popupOpen[c]=true;frameKeys[c]=null;}request({select:id,focus:true});}
     window.addEventListener('hashchange',selectHash);
-    (async()=>{try{const config=await post('/session',{});session=config.session;items=config.items;selected=config.selected&&config.selected.shared_id;for(const c of captures)popupOpen[c]=!!selected;filterObjects();$('report-link').hidden=!config.report_available;$('counts').textContent=items.length+' shared identities · '+Object.entries(config.counts).map(([k,v])=>v+' '+k).join(' · ');$('footer').textContent='Alignment: '+config.alignment+' · independent orbit controls · relative units';render(config);message('Before on the left · After on the right');selectHash();poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
+    (async()=>{try{const config=await post('/session',{});session=config.session;items=config.items;aliases=config.event_aliases||{};selected=config.selected&&config.selected.shared_id;for(const c of captures)popupOpen[c]=!!selected;filterObjects();$('report-link').hidden=!config.report_available;const reasons=config.uncertainty_summary||[];$('uncertainty-overview').hidden=!reasons.length;for(const reason of reasons){const li=document.createElement('li');li.textContent=reason.count+' · '+reason.reason;$('uncertainty-reasons').append(li);}$('counts').textContent=items.length+' shared identities · '+Object.entries(config.counts).map(([k,v])=>v+' '+k).join(' · ');$('footer').textContent=(config.review_coverage?'VLM review: '+config.review_coverage.reviewed+'/'+config.review_coverage.total+' · '+(config.review_status||'partial')+' · ':'')+'Alignment: '+config.alignment+' · independent orbit controls · relative units';render(config);message('Before on the left · After on the right');selectHash();poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
   </script>
 </body>
 </html>

@@ -8,10 +8,12 @@ from .sync_viewer import _SyncState, check_viewer_ports, serve_viewer
 
 
 def object_view(
-    root, objects, port=8094, refinement=None, comparison=None, report=None
+    root, objects, port=8094, refinement=None, comparison=None, report=None, review=None
 ):
-    if report and not comparison:
-        raise ValueError("--report requires --comparison")
+    if (report or review) and not comparison:
+        raise ValueError("--report/--review requires --comparison")
+    if report and not review:
+        review = read_json(Path(report) / "report.json").get("review_source")
     root = Path(root).resolve()
     check_viewer_ports(port, scene_count=2 if comparison else 1)
     manifest = read_json(root / "run_manifest.json")
@@ -34,12 +36,27 @@ def object_view(
             from .refined_inventory import RefinedInventory
 
             inventory = RefinedInventory(inventory, refinement)
+        reviewed = None
+        if review:
+            from .change_review import verify as verify_review
+
+            reviewed = verify_review(review, inventory, comparison)
         if report:
             from .change_report import verify_report
 
             print("Verifying bound change report...", flush=True)
-            verify_report(report, inventory, comparison)
+            verify_report(report, inventory, comparison, review=review)
+            if (
+                review
+                and read_json(Path(report) / "report.json")["schema_version"]
+                != "change-report-v2"
+            ):
+                raise ValueError("Use a report generated with the same --review")
         inventory = ComparisonInventory(inventory, comparison)
+        if reviewed:
+            from .change_review import apply_to_display
+
+            inventory = apply_to_display(inventory, reviewed)
     elif refinement:
         from .refined_inventory import InventoryModes
 

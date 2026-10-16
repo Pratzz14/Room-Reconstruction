@@ -54,7 +54,7 @@ To update an existing report's presentation without repeating image selection, e
     --viewer-url 'http://127.0.0.1:8120/'
 ```
 
-Use `--report outputs/change_report_paired --port 8120` when launching the viewer. Refresh verifies source bindings, saved frames/regions and all existing artifact hashes, copies the saved evidence, and regenerates HTML/Markdown. It preserves classifications, trust, measurements and the original report, and records the new presentation's code hashes in the new manifest.
+Use `--report outputs/change_report_paired --port 8120` when launching the viewer. Refresh verifies source bindings, saved frames/regions and all existing artifact hashes, copies the saved evidence, and regenerates HTML/Markdown. It preserves classifications, trust, measurements and the original report, and records the new presentation's code hashes in the new manifest. If the source report used a review, pass the matching `--review` directory as well.
 
 An optional `--config` JSON file accepts only:
 

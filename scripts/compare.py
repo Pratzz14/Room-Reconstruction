@@ -24,12 +24,55 @@ def _objects(inventory, capture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    for command in ("review", "verify-review"):
+        p = sub.add_parser(command)
+        p.add_argument("--reconstruction", type=Path, required=True)
+        p.add_argument("--objects", type=Path, required=True)
+        p.add_argument("--refinement", type=Path)
+        p.add_argument("--comparison", type=Path, required=True)
+        p.add_argument("--output", type=Path, required=True)
+        if command == "review":
+            p.add_argument(
+                "--config",
+                type=Path,
+                default=Path(__file__).resolve().parents[1]
+                / "configs/change_review.json",
+            )
+            p.add_argument("--prepare-only", action="store_true")
+            p.add_argument(
+                "--answers",
+                type=Path,
+                help="Import saved structured answers without provider calls",
+            )
+            p.add_argument("--retry-failed", action="store_true")
+            p.add_argument(
+                "--execution-config",
+                type=Path,
+                help="Explicit verified model/quota profile for unfinished requests; preserves saved answers",
+            )
+            p.add_argument(
+                "--batch-size-limit",
+                type=int,
+                choices=range(1, 5),
+                help="Use smaller execution batches when resuming after provider capacity failures",
+            )
+            p.add_argument(
+                "--evidence-report",
+                type=Path,
+                help="Reuse a source-bound original report without rerunning evidence selection",
+            )
+            p.add_argument(
+                "--credential-source",
+                type=Path,
+                help="Read an existing local Gemini credential without executing or copying its script",
+            )
     for command in ("report", "verify-report", "pack-report", "refresh-report"):
         p = sub.add_parser(command)
         p.add_argument("--reconstruction", type=Path, required=True)
         p.add_argument("--objects", type=Path, required=True)
         p.add_argument("--refinement", type=Path)
         p.add_argument("--comparison", type=Path, required=True)
+        p.add_argument("--review", type=Path)
         p.add_argument(
             "--output", type=Path, required=True, help="Separate report directory"
         )
@@ -72,6 +115,41 @@ def main():
     match.add_argument("--tolerance", type=float, required=True)
     match.add_argument("--position-scale", type=float, default=1.0)
     args = parser.parse_args()
+    if args.command in ("review", "verify-review"):
+        from reconstruction_v2.change_review import run as review_run
+        from reconstruction_v2.change_review import verify as verify_review
+        from reconstruction_v2.comparison import load_inventory
+
+        inventory = load_inventory(args.reconstruction, args.objects, args.refinement)
+        result = (
+            review_run(
+                inventory,
+                args.comparison,
+                args.output,
+                read_json(args.config),
+                prepare_only=args.prepare_only,
+                answers=args.answers,
+                retry_failed=args.retry_failed,
+                evidence_report=args.evidence_report,
+                credential_source=args.credential_source,
+                batch_limit=args.batch_size_limit,
+                execution_config=read_json(args.execution_config)
+                if args.execution_config
+                else None,
+            )
+            if args.command == "review"
+            else verify_review(args.output, inventory, args.comparison)
+        )
+        print(
+            json.dumps(
+                {
+                    k: result[k]
+                    for k in ("status", "coverage", "usage", "stopped_reason")
+                },
+                indent=2,
+            )
+        )
+        return 2 if result["stopped_reason"] else 0
     if args.command in ("report", "verify-report", "pack-report", "refresh-report"):
         from reconstruction_v2.change_report import (
             build_report,
@@ -88,12 +166,15 @@ def main():
                 args.archive,
                 inventory,
                 args.comparison,
+                review=args.review,
             )
         else:
             if args.command == "report":
                 config = read_json(args.config) if args.config else {}
                 config.setdefault("viewer_url", args.viewer_url)
-                report = build_report(inventory, args.comparison, args.output, config)
+                report = build_report(
+                    inventory, args.comparison, args.output, config, review=args.review
+                )
             elif args.command == "refresh-report":
                 report = refresh_report(
                     args.source_report,
@@ -101,9 +182,12 @@ def main():
                     inventory,
                     args.comparison,
                     viewer_url=args.viewer_url,
+                    review=args.review,
                 )
             else:
-                report = verify_report(args.output, inventory, args.comparison)
+                report = verify_report(
+                    args.output, inventory, args.comparison, review=args.review
+                )
             result = {
                 "status": "completed"
                 if args.command in ("report", "refresh-report")

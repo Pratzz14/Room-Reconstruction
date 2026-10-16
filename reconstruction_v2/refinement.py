@@ -12,7 +12,13 @@ from PIL import Image, ImageDraw
 from .core import digest, identity, read_json, safe_path, write_json
 from .object_geometry import CaptureGeometry, voxel_geometry
 from .refinement_evidence import PROMPT, crop_image, font, prepare, schema
-from .refinement_gemini import Gemini, exclusive, validate_config, validate_output
+from .refinement_gemini import (
+    Gemini,
+    exclusive,
+    project_cache_root,
+    validate_config,
+    validate_output,
+)
 
 
 def normalize_evidence(answer, records, inventory):
@@ -994,7 +1000,16 @@ def run(
                     output / "followup_applied.json",
                     {"applied_from_saved_response": True, "provider_calls": 0},
                 )
-        client = Gemini(output, config, credential_source) if not offline else None
+        client = (
+            Gemini(
+                output,
+                config,
+                credential_source,
+                cache_root=project_cache_root(),
+            )
+            if not offline
+            else None
+        )
         if not offline and not answer_path.exists():
             answer = client.generate(
                 PROMPT,

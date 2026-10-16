@@ -58,6 +58,11 @@ def render_markdown(report):
         "```",
         "",
     ]
+    if report.get("review_summary"):
+        rows += [
+            "VLM review coverage and usage: " + pretty(report["review_summary"]),
+            "",
+        ]
 
     def text(value):
         return (
@@ -96,6 +101,13 @@ def render_markdown(report):
             "```",
             "",
         ]
+        if event.get("review_status"):
+            rows += [
+                "Review: " + event["review_status"],
+                "Original proposal: "
+                + ", ".join(e["type"] for e in event["original_proposals"]),
+                "",
+            ]
         rows += ["### Images used for comparison", ""]
         for capture, pair in comparison_views(event).items():
             rows += [
@@ -208,10 +220,19 @@ def render_html(report):
             if measurement["displacement"] is None
             else f"{measurement['displacement']:.6g} relative units"
         )
+        review_text = ""
+        if event.get("review_status"):
+            review_text = (
+                '<p class="qualification">Review: '
+                + esc(event["review_status"])
+                + " · Original proposal: "
+                + esc(", ".join(e["type"] for e in event["original_proposals"]))
+                + "</p>"
+            )
         events.append(f'''<article id="{esc(event["event_id"])}" data-type="{esc(event["type"])}" data-trust="{esc(event["trust"])}" data-label="{esc(event["label"].lower())}">
           <div class="event-heading"><div><h2>{esc(event["label"])}</h2><p><strong>{esc(event["type"])} · {esc(event["trust"])}</strong> · <code>{esc(event["event_id"])}</code></p></div>
           <a class="viewer-link" data-path="{esc(event["visualization"]["viewer_path"])}" href="{esc(event["visualization"]["viewer_url"])}">Inspect in 3D ↗</a></div>
-          <p>{esc(event["explanation"])}</p>{"".join('<p class="qualification">' + esc(x) + "</p>" for x in event["qualifications"])}
+          {review_text}<p>{esc(event["explanation"])}</p>{"".join('<p class="qualification">' + esc(x) + "</p>" for x in event["qualifications"])}
           <p class="measurement">Object displacement: <strong>{esc(delta)}</strong> · Basis: {esc(measurement["basis"])}</p>
           <details><summary>Object IDs, centroids, confidence and identity alternatives</summary><pre>{esc(json.dumps({k: event[k] for k in ("before_id", "after_id", "labels", "measurements", "confidence", "identity", "uncertainties")}, indent=2))}</pre></details>
           <section class="paired-comparison" aria-label="Before and After comparison"><h3>Images used for comparison</h3><div class="evidence-grid">{"".join(paired)}</div></section>
@@ -221,7 +242,17 @@ def render_html(report):
         "TITLE": "Room change report"
         + (" · synthetic fixture" if report.get("synthetic") else ""),
         "ALIGNMENT": esc(scene["alignment"]["quality"]["status"]),
-        "COUNTS": esc(counts),
+        "COUNTS": esc(
+            counts
+            + (
+                " · VLM reviewed "
+                + str(report["review_summary"]["coverage"]["reviewed"])
+                + "/"
+                + str(report["review_summary"]["coverage"]["total"])
+                if report.get("review_summary")
+                else ""
+            )
+        ),
         "TRUST": esc(pretty(scene["counts_by_trust"])),
         "WARNINGS": "".join("<li>" + esc(w) + "</li>" for w in report["warnings"]),
         "COVERAGE": esc(json.dumps(scene["coverage"], indent=2)),

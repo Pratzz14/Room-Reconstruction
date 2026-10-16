@@ -15,7 +15,12 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
-from reconstruction_v2.comparison_viewer import ComparisonState, make_comparison_handler
+from reconstruction_v2.comparison_viewer import (
+    ComparisonState,
+    make_comparison_handler,
+    readable_explanation,
+    uncertainty_messages,
+)
 from reconstruction_v2.core import read_json, write_json
 from reconstruction_v2.object_contracts import ObjectInventory
 from reconstruction_v2.object_pipeline import run
@@ -26,6 +31,21 @@ from tests.test_objects import AnalyticModels
 
 
 class ComparisonViewerTests(unittest.TestCase):
+    def test_uncertainty_reasons_are_readable_and_prioritize_invalid_evidence(self):
+        change = {
+            "explanation": "Uncertain: identity_ambiguous, invalid_vlm_evidence:invalid_full_frame_box.",
+            "uncertainties": [
+                "identity_ambiguous",
+                "invalid_vlm_evidence:invalid_full_frame_box",
+            ],
+        }
+        messages = uncertainty_messages(change)
+        self.assertIn("invalid image region", messages[0]["message"])
+        explanation = readable_explanation(change)
+        self.assertNotIn("invalid_full_frame_box", explanation)
+        self.assertNotIn("identity_ambiguous", explanation)
+        self.assertIn("Competing object identities", explanation)
+
     @classmethod
     def setUpClass(cls):
         scratch = PROJECT / "outputs/.test_work"

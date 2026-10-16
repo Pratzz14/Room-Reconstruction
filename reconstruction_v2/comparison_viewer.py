@@ -4,6 +4,7 @@ import json
 import mimetypes
 import secrets
 import threading
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -13,6 +14,52 @@ from .region_reference import RegionReferences
 from .sync_viewer import _SyncState
 
 CAPTURES = ("before", "after")
+
+UNCERTAINTY_REASONS = {
+    "invalid_vlm_evidence": "Gemini returned an invalid image region or evidence reference",
+    "local_visual_contradiction": "A source-picture check rejected the model claim",
+    "visual_and_location_evidence_conflict": "Pictures and the estimated location change disagree",
+    "incompatible_semantic_identity_assignment": "Gemini linked different types of objects",
+    "identity_ambiguous": "Competing object identities remain unresolved",
+    "competing_visual_identity": "Gemini proposed competing identity matches",
+    "uncertain_capture_identity": "The source detection is low confidence or a group of objects",
+    "new_counterpart_requires_closeup_confirmation": "A newly found counterpart still needs close-up confirmation",
+    "presence_change_requires_closeup_confirmation": "Addition or removal still needs close-up confirmation",
+    "opposing_region_absence_not_supported": "The pictures do not establish that the missing side is empty",
+    "unresolved_inventoried_counterpart": "The original opposite-side object has not been accounted for",
+    "no_valid_review_for_reconciled_identity": "No valid visual review supports this final identity",
+    "not_yet_reviewed": "An additional competing observation has not been independently reviewed",
+    "visual_movement_unresolved": "The pictures do not resolve whether this object moved",
+    "alignment_not_accepted": "Room alignment was not accepted",
+}
+
+
+def uncertainty_messages(change):
+    codes = change.get("uncertainties", [])
+    ordered = sorted(
+        codes,
+        key=lambda c: (
+            list(UNCERTAINTY_REASONS).index(c.split(":")[0])
+            if c.split(":")[0] in UNCERTAINTY_REASONS
+            else len(UNCERTAINTY_REASONS)
+        ),
+    )
+    return [
+        {
+            "code": code,
+            "message": UNCERTAINTY_REASONS.get(
+                code.split(":")[0], code.replace("_", " ")
+            ),
+        }
+        for code in ordered
+    ]
+
+
+def readable_explanation(change):
+    result = change.get("explanation", "Change classification unavailable.")
+    for reason in sorted(uncertainty_messages(change), key=lambda r: -len(r["code"])):
+        result = result.replace(reason["code"], reason["message"])
+    return result
 
 
 class ComparisonState:
@@ -35,7 +82,11 @@ class ComparisonState:
             view.overlay = False
             view.settings[view.capture]["show_path"] = False
         self.items = {}
-        for identity in read_json(Path(comparison) / "identities.json")["identities"]:
+        for identity in getattr(
+            inventory,
+            "review_identities",
+            read_json(Path(comparison) / "identities.json")["identities"],
+        ):
             sides = {}
             for capture in CAPTURES:
                 oid = identity[capture + "_id"]
@@ -98,13 +149,38 @@ class ComparisonState:
                 "status": identity["status"],
                 "type": change.get("type", "not_evaluated"),
                 "trust": change.get("trust", "uncertain"),
-                "explanation": change.get(
-                    "explanation", "Change classification unavailable."
-                ),
+                "explanation": readable_explanation(change),
+                "uncertainty_reasons": uncertainty_messages(change),
+                "review_status": change.get("review_status"),
+                "original_proposals": [
+                    {"type": p["type"], "shared_id": p["shared_id"]}
+                    for p in change.get("original_proposals", [])
+                ],
                 "sides": sides,
             }
         self.counts = inventory.comparison.get("change_counts", {})
         self.alignment = inventory.comparison["alignment"]["quality"]["status"]
+        self.review_coverage = inventory.comparison.get("review_coverage")
+        self.review_status = inventory.comparison.get("review_status")
+        primary_reasons = Counter(
+            item["uncertainty_reasons"][0]["message"]
+            if item["uncertainty_reasons"]
+            else "Insufficient object evidence"
+            for item in self.items.values()
+            if item["type"] == "uncertain"
+        )
+        self.uncertainty_summary = [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(
+                primary_reasons.items(), key=lambda row: (-row[1], row[0])
+            )
+        ]
+        self.event_aliases = {}
+        for item in self.items.values():
+            for original in item["original_proposals"]:
+                self.event_aliases.setdefault(original["shared_id"], []).append(
+                    item["shared_id"]
+                )
         self.region_frames = RegionReferences(inventory, self.views)
         self.references = dict.fromkeys(CAPTURES)
 
@@ -119,6 +195,10 @@ class ComparisonState:
                 "counts": self.counts,
                 "alignment": self.alignment,
                 "report_available": self.report is not None,
+                "review_coverage": self.review_coverage,
+                "review_status": self.review_status,
+                "uncertainty_summary": self.uncertainty_summary,
+                "event_aliases": self.event_aliases,
                 **self.snapshot(),
             }
 

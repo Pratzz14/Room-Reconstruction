@@ -1,12 +1,190 @@
-# Room Reconstruction v2 — independent VGGT workflow
+# Room Reconstruction v2 — What Changed in the Room?
 
-The v2 implementation prepares the verified 32 Before and 30 After frames, runs separate VGGT GPU sessions, exports depth/cameras/colored points with observation membership, and provides saved-file depth and 3D inspection. It does not align captures, calibrate meters, or classify changes.
+An end-to-end spatial AI workflow for comparing two phone recordings of the same
+indoor space. It reconstructs each capture in 3D, builds a defensible shared
+coordinate frame, associates objects across Before/After recordings, and presents
+the result through interactive inspection, synchronized replay, and a change
+report.
+
+This project was built for the [Humanoid Spatial AI and Navigation internship
+challenge](https://jobs.ashbyhq.com/humanoid/72741997-0fbc-413c-88a8-a273272641d1).
+It is deliberately an offline-first, inspectable research prototype rather than
+a real-time robot stack: expensive model inference runs in Colab, while saved
+artifacts can be verified, queried, replayed, and compared locally on CPU.
+
+## Project at a glance
+
+**Input:** two short RGB phone videos, `data/before.mp4` and `data/after.mp4`,
+recorded from different viewpoints with overlapping views of a small room.
+
+**Output:** independently reconstructed Before/After rooms, an accepted
+After-to-Before alignment when the evidence supports it, object identities and
+uncertainties, estimated moved/added/removed events, source-linked image
+evidence, and interactive 3D visualizations.
+
+The completed example uses 32 Before and 30 After frames. Each frame remains
+traceable to its source video, timestamp, image coordinates, depth, confidence,
+and supporting cloud observations. The system keeps uncertainty explicit:
+coordinates are relative rather than metric-calibrated, visibility is not
+assumed from a missing detection, and ambiguous identities are not forced into
+change labels.
+
+### Demos
+
+The most useful way to evaluate the project is to run the saved artifacts and
+inspect the evidence, not only the final labels. The commands below reuse the
+completed run and do not require another GPU inference.
+
+1. **Replay reconstruction:** show the source video beside the reconstructed
+   room. Play, pause, seek, change speed, orbit, and watch saved geometry appear
+   when its earliest supporting observation is reached.
+
+   ```powershell
+   & $rdPython scripts/reconstruct.py sync-view --run outputs/reconstruction_colab --port 8092
+   ```
+
+   Open <http://127.0.0.1:8092>. Before and After have independent timelines
+   and coordinate frames; replay is a retrospective reveal of a completed
+   reconstruction, not online SLAM.
+
+2. **Select an object and visualize it:** inspect the object inventory against
+   the full room, focus or isolate a selected object, view its centroid/bounds,
+   follow its supporting frames, and open the original image and saved mask
+   evidence.
+
+   ```powershell
+   & $rdPython scripts/reconstruct.py object-view `
+       --run outputs/reconstruction_colab --objects outputs/objects_colab --port 8094
+   ```
+
+   Open <http://127.0.0.1:8094>. The viewer distinguishes reliable 3D objects
+   from image-only detections and never invents geometry for the latter.
+
+3. **Compare Before and After:** run the CPU-only alignment, global identity
+   matching, and change classification, then inspect shared objects side by side.
+
+   ```powershell
+   & $rdPython scripts/compare.py run `
+       --reconstruction outputs/reconstruction_colab `
+       --objects outputs/objects_colab `
+       --refinement outputs/objects_refined_discovery `
+       --output outputs/comparison_changes_v1
+
+   & $rdPython scripts/reconstruct.py object-view `
+       --run outputs/reconstruction_colab `
+       --objects outputs/objects_colab `
+       --refinement outputs/objects_refined_discovery `
+       --comparison outputs/comparison_changes_v1 --port 8098
+   ```
+
+   Open <http://127.0.0.1:8098>. Select a shared identity to highlight its
+   Before/After instances and open source-frame evidence. The generated report
+   provides a portable, image-based view with the same evidence contract; see
+   [change reports](docs/change_reports.md).
+
+## Technical architecture
+
+```text
+phone videos
+  -> decode, timestamp and hash every frame
+  -> select sharp, diverse, connected frames
+  -> independently reconstruct Before and After with VGGT
+  -> export depth, cameras, RGB point clouds and observation provenance
+  -> detect/segment objects and build per-capture inventories
+  -> align After into Before with held-out visual/geometric checks
+  -> globally match identities and classify conservative change events
+  -> serve synchronized replay, object inspection and evidence reports
+```
+
+- **Reconstruction:** PyTorch/VGGT inference in a pinned Colab GPU
+  environment; OpenCV handles video decoding, frame selection, image checks,
+  and feature extraction.
+- **Geometry:** camera intrinsics/poses and depth are converted into colored
+  point clouds. Every point retains observation membership and source-frame
+  provenance. Display sampling never changes saved measurements.
+- **Object understanding:** segmentation and association produce stable
+  per-capture object records, masks, descriptors, geometry quality, and
+  supporting frames. Gemini refinement is optional and bounded; it proposes
+  labels/identities but does not silently overwrite raw masks or geometry.
+- **Comparison:** a CPU-only Sim(3) alignment maps After into the Before frame.
+  Held-out residuals, inlier support, multiple frame pairs, plane structure,
+  and scale stability gate acceptance. Matching is global and one-to-one, with
+  an explicit unmatched option and ambiguity retention.
+- **Presentation:** lightweight local Python servers and browser JavaScript
+  provide 3D inspection, synchronized video replay, side-by-side comparison,
+  source-image evidence, and portable HTML/Markdown/JSON reports.
+
+## Design choices and tradeoffs
+
+1. **Separate reconstruction before registration.** Each recording is processed
+   independently so a failed capture cannot corrupt the other one. Alignment is
+   a separate, auditable stage because the two reconstructions begin with
+   arbitrary origins, orientations, and relative scales.
+2. **Provenance over opaque results.** Source hashes, timestamps, masks,
+   observations, pixels, depth, and camera references travel with the artifacts.
+   This makes a label debuggable: a reviewer can go from a change event to the
+   exact image and 3D support behind it.
+3. **Conservative semantics.** Semantic proposals are advisory. Ambiguous
+   matches, occlusions, missing geometry, and image-only detections remain
+   explicit rather than being converted into confident “moved”, “added”, or
+   “removed” claims.
+4. **Offline-first iteration.** GPU/provider calls are isolated from local
+   viewing, comparison, verification, and report generation. This makes
+   experiments repeatable, keeps credentials out of artifacts, and makes the
+   user-facing demo fast to rerun.
+5. **Replay instead of pretending to be online SLAM.** The replay reveals the
+   saved full-capture reconstruction according to observation time. It is
+   honest about what the system computes while still making temporal coverage
+   and source-to-geometry correspondence easy to understand.
+
+The main tradeoff is that this MVP targets large room-scale changes and relative
+spatial reasoning. It does not provide metric calibration, a watertight mesh,
+rotation-change estimation, guaranteed physical absence, or real-time
+performance. These boundaries are intentional and are included in every report.
+
+## Quick setup
+
+The repository is Windows-friendly and uses PowerShell commands. Local viewing,
+comparison, and report generation use the existing compatible environment; GPU
+inference is run through the Colab notebook.
+
+```powershell
+Set-Location 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction v2'
+$rdPython = 'C:\Users\prati\OneDrive\Desktop\Room Reconstruction\.venv\Scripts\python.exe'
+
+# Import a completed reconstruction archive downloaded from Drive.
+& $rdPython scripts/reconstruct.py import `
+    --archive "$env:USERPROFILE\Downloads\roomdelta3d_v2_reconstruction.zip" `
+    --output outputs/reconstruction_colab
+& $rdPython scripts/reconstruct.py verify --run outputs/reconstruction_colab
+
+# Install only the optional local stages you intend to run.
+& $rdPython -m pip install -r requirements-viewer.txt
+& $rdPython -m pip install -r requirements-comparison.txt
+```
+
+For a fresh GPU run, open
+[`notebooks/reconstruction_v2_colab.ipynb`](notebooks/reconstruction_v2_colab.ipynb)
+in VS Code with the Colab extension (or browser Colab), mount Drive, upload the
+reviewed bundle, run the 4/8/16-frame pilots, then run separate full Before and
+After inference. The notebook pins the environment, verifies the model
+checkpoint, records runtime identities and memory diagnostics, and writes the
+final archive plus receipt to Drive. The detailed [GPU workflow](#run-the-real-gpu-workflow--vs-code-colab-extension--drive)
+and [developer checks](#developer-checks) follow below.
+
+For the reasoning behind frame selection, coordinate systems, attention
+chunking, artifact contracts, and failure diagnosis, see the
+[raw-video-to-3D technical guide](docs/raw_video_to_3d_room_reconstruction.md).
 
 ## Current status
 
 The completed independent GPU reconstruction is imported at `outputs/reconstruction_colab`: 32 Before and 30 After frames, depth, cameras, colored points, and source-observation links. Both captures pass saved-artifact consistency verification. Real-room accuracy remains independently unvalidated. `outputs/reconstruction` is the earlier prepared-only input, not the completed run.
 
-Steps 2 and 3 now have an object inference/association pipeline and per-capture inspection controls. CPU synthetic and browser validation are separate from live object-model acceptance: the current real v2 reconstructions still need their object GPU run and visual review. See [the detailed implementation plan](docs/steps_2_3_implementation_plan.md).
+Steps 2 and 3 now have a completed object inference/association pipeline and
+per-capture inspection controls. The imported `outputs/objects_colab` artifacts
+are available for local review; CPU synthetic and browser validation remain
+separate from visual acceptance of the real object model. See [the detailed
+implementation plan](docs/steps_2_3_implementation_plan.md).
 
 Synthetic analytic planes and RGB gradients can be regenerated for regression/browser QA with `scripts/create_test_fixture.py --output outputs/reconstruction_test_fixture`. Generated test fixtures and temporary test runtimes are removed after use; they are not room reconstruction evidence.
 

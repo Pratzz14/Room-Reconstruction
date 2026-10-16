@@ -59,13 +59,15 @@ def configuration(config=None):
     return config
 
 
-def source_record(inventory, comparison):
+def source_record(inventory, comparison, review=None):
     result = {
         "inventory": source_binding(inventory),
         "comparison_sha256": digest(comparison / "comparison.json"),
         "changes_sha256": digest(comparison / "changes.json"),
         "identities_sha256": digest(comparison / "identities.json"),
     }
+    if review:
+        result["review_sha256"] = digest(Path(review) / "review.json")
     return result
 
 
@@ -165,6 +167,14 @@ def event_record(event, proposal, objects, alignment, viewer_url):
             "interactive_requires_local_viewer": True,
         },
     }
+    for key in (
+        "review_status",
+        "original_proposals",
+        "review_findings",
+        "source_event_ids",
+    ):
+        if key in event:
+            result[key] = event[key]
     return result
 
 
@@ -209,9 +219,11 @@ def scene_summary(inventory, alignment, changes, events):
     }
 
 
-def build_report(inventory, comparison, output, config=None):
+def build_report(inventory, comparison, output, config=None, review=None):
     comparison, output = Path(comparison).resolve(), Path(output).resolve()
     roots = [inventory.reconstruction, inventory.root, comparison]
+    if review:
+        roots.append(Path(review).resolve())
     if hasattr(inventory, "refinement_root"):
         roots.append(inventory.refinement_root)
     if any(
@@ -233,8 +245,17 @@ def build_report(inventory, comparison, output, config=None):
         p["shared_id"]: p
         for p in read_json(comparison / "identities.json")["identities"]
     }
-    sources = source_record(inventory, comparison)
+    sources = source_record(inventory, comparison, review)
     source_inventory = inventory
+    reviewed = None
+    if review:
+        from .change_review import verify as verify_review
+        from .review_analysis import AugmentedInventory
+
+        reviewed = verify_review(review, inventory, comparison)
+        changes = reviewed["changes"]
+        proposals = {i["shared_id"]: i for i in reviewed["identities"]}
+        inventory = AugmentedInventory(inventory, reviewed["derived_observations"])
     code = {name: digest(Path(__file__).with_name(name)) for name in CODE_FILES}
     selector = EvidenceSelector(inventory, compared["alignment"], config["evidence"])
     with exclusive(output.parent / ("." + output.name + ".report.lock")):
@@ -274,7 +295,7 @@ def build_report(inventory, comparison, output, config=None):
                     ]
                 events.append(record)
             report = {
-                "schema_version": VERSION,
+                "schema_version": "change-report-v2" if reviewed else VERSION,
                 "sources": sources,
                 "config": config,
                 "synthetic": compared.get("synthetic", False),
@@ -285,6 +306,25 @@ def build_report(inventory, comparison, output, config=None):
                 ),
                 "events": events,
             }
+            if reviewed:
+                report.update(
+                    review_source=str(Path(review).resolve()),
+                    review_summary={
+                        "coverage": reviewed["coverage"],
+                        "usage": reviewed["usage"],
+                        "status": reviewed["status"],
+                    },
+                )
+                report["warnings"] = [
+                    w for w in WARNINGS if "Presence-only" not in w
+                ] + [
+                    "VLM-reviewed visibility/presence remain estimates; original proposals are retained."
+                ]
+                if reviewed["status"] != "completed":
+                    report["warnings"].append(
+                        "VLM review is incomplete. "
+                        + (reviewed.get("stopped_reason") or "Some review work is pending.")
+                    )
             write_json(stage / "report.json", report)
             from .report_render import render_html, render_markdown
 
@@ -307,8 +347,9 @@ def build_report(inventory, comparison, output, config=None):
                 source_inventory,
                 comparison,
                 comparison_verified=True,
+                review=review,
             )
-            if sources != source_record(source_inventory, comparison):
+            if sources != source_record(source_inventory, comparison, review):
                 raise ValueError("Report sources changed during generation")
             if any(
                 digest(Path(__file__).with_name(name)) != sha
@@ -335,11 +376,12 @@ def verify_report(
     comparison=None,
     *,
     comparison_verified=False,
+    review=None,
     check_presentation=True,
 ):
     output = Path(output).resolve()
     manifest = read_json(output / "manifest.json")
-    if manifest.get("schema_version") != VERSION:
+    if manifest.get("schema_version") not in (VERSION, "change-report-v2"):
         raise ValueError("Unsupported report version")
     artifacts = manifest["artifacts"]
     if not {"report.json", "summary.md", "report.html"}.issubset(artifacts):
@@ -370,11 +412,18 @@ def verify_report(
         )
     originals, proposals = {}, {}
     selector = None
+    reviewed = None
+    if report["schema_version"] == "change-report-v2" and inventory is not None:
+        from .change_review import verify as verify_review
+        from .review_analysis import AugmentedInventory
+
+        review = review or report["review_source"]
+        reviewed = verify_review(review, inventory, comparison)
     if inventory is not None:
         comparison = Path(comparison).resolve()
         if not comparison_verified:
             verify_comparison(inventory, comparison)
-        if report["sources"] != source_record(inventory, comparison):
+        if report["sources"] != source_record(inventory, comparison, review):
             raise ValueError("Report belongs to different or stale source artifacts")
         originals = {
             e["shared_id"]: e for e in read_json(comparison / "changes.json")["events"]
@@ -383,6 +432,16 @@ def verify_report(
             e["shared_id"]: e
             for e in read_json(comparison / "identities.json")["identities"]
         }
+        if reviewed:
+            originals = {e["shared_id"]: e for e in reviewed["changes"]["events"]}
+            proposals = {i["shared_id"]: i for i in reviewed["identities"]}
+            inventory = AugmentedInventory(inventory, reviewed["derived_observations"])
+            if report["review_summary"] != {
+                "coverage": reviewed["coverage"],
+                "usage": reviewed["usage"],
+                "status": reviewed["status"],
+            }:
+                raise ValueError("Report review coverage/usage disagree")
         if set(originals) != set(event_ids):
             raise ValueError("Report events do not cover source changes")
         selector = EvidenceSelector(
@@ -531,7 +590,11 @@ def verify_report(
                                 "Projected region disagrees with source geometry/camera"
                             )
     if inventory is not None:
-        changes = read_json(Path(comparison) / "changes.json")
+        changes = (
+            reviewed["changes"]
+            if reviewed
+            else read_json(Path(comparison) / "changes.json")
+        )
         expected_scene = scene_summary(
             inventory,
             read_json(Path(comparison) / "alignment.json"),
@@ -550,7 +613,9 @@ def verify_report(
     return report
 
 
-def refresh_report(source, output, inventory, comparison, *, viewer_url=None):
+def refresh_report(
+    source, output, inventory, comparison, *, viewer_url=None, review=None
+):
     """Publish current presentation from checked saved evidence; no selection rerun."""
     source, output = Path(source).resolve(), Path(output).resolve()
     roots = [
@@ -561,6 +626,8 @@ def refresh_report(source, output, inventory, comparison, *, viewer_url=None):
     ]
     if hasattr(inventory, "refinement_root"):
         roots.append(inventory.refinement_root)
+    if review:
+        roots.append(Path(review).resolve())
     if any(
         output == r or output.is_relative_to(r) or r.is_relative_to(output)
         for r in roots
@@ -568,7 +635,9 @@ def refresh_report(source, output, inventory, comparison, *, viewer_url=None):
         raise ValueError("Refreshed report output must be separate from all sources")
     # Historical exports are hash checked, then their canonical records, source
     # bindings, measurements, and image regions are verified before re-rendering.
-    report = verify_report(source, inventory, comparison, check_presentation=False)
+    report = verify_report(
+        source, inventory, comparison, review=review, check_presentation=False
+    )
     original_manifest = read_json(source / "manifest.json")
     source_manifest_sha = digest(source / "manifest.json")
     if viewer_url is not None:
@@ -615,7 +684,9 @@ def refresh_report(source, output, inventory, comparison, *, viewer_url=None):
                 },
             }
             write_json(stage / "manifest.json", manifest)
-            verify_report(stage, inventory, comparison, comparison_verified=True)
+            verify_report(
+                stage, inventory, comparison, review=review, comparison_verified=True
+            )
             if digest(source / "manifest.json") != source_manifest_sha or any(
                 digest(Path(__file__).with_name(name)) != sha
                 for name, sha in presentation_code.items()
@@ -632,14 +703,14 @@ def refresh_report(source, output, inventory, comparison, *, viewer_url=None):
     return report
 
 
-def pack_report(output, archive, inventory=None, comparison=None):
+def pack_report(output, archive, inventory=None, comparison=None, review=None):
     output, archive = Path(output).resolve(), Path(archive).resolve()
     if archive.is_relative_to(output):
         raise ValueError("Archive must be outside the report directory")
     with exclusive(archive.parent / ("." + archive.name + ".lock")):
         if archive.exists():
             raise FileExistsError("Archive already exists; choose a new destination")
-        verify_report(output, inventory, comparison)
+        verify_report(output, inventory, comparison, review=review)
         manifest = read_json(output / "manifest.json")
         temporary = archive.with_suffix(archive.suffix + ".tmp")
         try:

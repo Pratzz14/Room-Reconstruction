@@ -1,0 +1,17 @@
+{
+  "version": "change-review-v1",
+  "model": "gemini-3.1-flash-lite",
+  "project_scope": "gemini-project-test",
+  "quota_verified": false,
+  "free_tier_verified": false,
+  "quota_verified_at": null,
+  "remaining_requests": null,
+  "requests_per_minute": null,
+  "input_tokens_per_minute": null,
+  "requests_per_day": null,
+  "max_input_tokens": 125000,
+  "min_generation_interval_sec": 65,
+  "max_output_tokens": 24576,
+  "timeout_sec": 240,
+  "batch_size": 4
+}
