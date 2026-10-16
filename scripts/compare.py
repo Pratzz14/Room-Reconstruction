@@ -24,6 +24,23 @@ def _objects(inventory, capture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    for command in ("report", "verify-report", "pack-report", "refresh-report"):
+        p = sub.add_parser(command)
+        p.add_argument("--reconstruction", type=Path, required=True)
+        p.add_argument("--objects", type=Path, required=True)
+        p.add_argument("--refinement", type=Path)
+        p.add_argument("--comparison", type=Path, required=True)
+        p.add_argument(
+            "--output", type=Path, required=True, help="Separate report directory"
+        )
+        if command == "report":
+            p.add_argument("--config", type=Path)
+            p.add_argument("--viewer-url", default="http://127.0.0.1:8094/")
+        if command == "pack-report":
+            p.add_argument("--archive", type=Path, required=True)
+        if command == "refresh-report":
+            p.add_argument("--source-report", type=Path, required=True)
+            p.add_argument("--viewer-url")
     for command in ("run", "verify"):
         p = sub.add_parser(command)
         p.add_argument("--reconstruction", type=Path, required=True)
@@ -55,6 +72,49 @@ def main():
     match.add_argument("--tolerance", type=float, required=True)
     match.add_argument("--position-scale", type=float, default=1.0)
     args = parser.parse_args()
+    if args.command in ("report", "verify-report", "pack-report", "refresh-report"):
+        from reconstruction_v2.change_report import (
+            build_report,
+            pack_report,
+            refresh_report,
+            verify_report,
+        )
+        from reconstruction_v2.comparison import load_inventory
+
+        inventory = load_inventory(args.reconstruction, args.objects, args.refinement)
+        if args.command == "pack-report":
+            result = pack_report(
+                args.output,
+                args.archive,
+                inventory,
+                args.comparison,
+            )
+        else:
+            if args.command == "report":
+                config = read_json(args.config) if args.config else {}
+                config.setdefault("viewer_url", args.viewer_url)
+                report = build_report(inventory, args.comparison, args.output, config)
+            elif args.command == "refresh-report":
+                report = refresh_report(
+                    args.source_report,
+                    args.output,
+                    inventory,
+                    args.comparison,
+                    viewer_url=args.viewer_url,
+                )
+            else:
+                report = verify_report(args.output, inventory, args.comparison)
+            result = {
+                "status": "completed"
+                if args.command in ("report", "refresh-report")
+                else "verified",
+                "events": report["scene"]["event_count"],
+                "counts": report["scene"]["change_counts"],
+                "output": str(args.output),
+                "provider_calls": 0,
+            }
+        print(json.dumps(result, indent=2))
+        return 0
     if args.command in ("run", "verify"):
         from reconstruction_v2.comparison import load_inventory, run, verify
 

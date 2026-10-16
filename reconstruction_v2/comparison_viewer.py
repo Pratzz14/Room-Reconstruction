@@ -1,13 +1,14 @@
 """Two independent room scenes controlled by one shared-identity selection."""
 
 import json
+import mimetypes
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .core import read_json
+from .core import read_json, safe_path
 from .region_reference import RegionReferences
 from .sync_viewer import _SyncState
 
@@ -15,7 +16,15 @@ CAPTURES = ("before", "after")
 
 
 class ComparisonState:
-    def __init__(self, root, inventory, comparison, maximum=200000):
+    def __init__(self, root, inventory, comparison, maximum=200000, report=None):
+        self.report_root = Path(report).resolve() if report else None
+        self.report = read_json(self.report_root / "report.json") if report else None
+        self.report_files = (
+            read_json(self.report_root / "manifest.json")["artifacts"] if report else {}
+        )
+        report_events = (
+            {e["event_id"]: e for e in self.report["events"]} if report else {}
+        )
         self.lock = threading.RLock()
         self.session, self.sequence, self.selected = None, -1, None
         self.views = {
@@ -57,6 +66,21 @@ class ComparisonState:
                             "context": record.get("status") == "context",
                         }
                     )
+                if identity["shared_id"] in report_events:
+                    role = "object_" + capture
+                    preferred = [
+                        v["source_id"]
+                        for v in report_events[identity["shared_id"]]["evidence"][role][
+                            "views"
+                        ]
+                    ]
+                    frames.sort(
+                        key=lambda f: (
+                            preferred.index(f["id"])
+                            if f["id"] in preferred
+                            else len(preferred)
+                        )
+                    )
                 sides[capture] = {
                     "id": oid,
                     "point_count": obj["point_count"],
@@ -94,6 +118,7 @@ class ComparisonState:
                 "items": list(self.items.values()),
                 "counts": self.counts,
                 "alignment": self.alignment,
+                "report_available": self.report is not None,
                 **self.snapshot(),
             }
 
@@ -126,6 +151,7 @@ class ComparisonState:
                 "frames",
                 "settings",
                 "fit",
+                "focus",
             }:
                 raise ValueError("Unknown comparison action")
             selected = payload.get("select", self.selected)
@@ -142,6 +168,7 @@ class ComparisonState:
             if (
                 any(type(v) is not bool for v in settings.values())
                 or type(payload.get("fit", False)) is not bool
+                or type(payload.get("focus", False)) is not bool
             ):
                 raise ValueError("Room controls must be boolean")
             item = self.items.get(selected)
@@ -213,6 +240,8 @@ class ComparisonState:
                     if frames[capture] not in allowed:
                         raise ValueError("Frame does not support the selected object")
                     action["evidence"] = frames[capture]
+                if payload.get("focus") and side and side["point_count"]:
+                    action["focus"] = True
                 actions[capture] = action
             for capture, view in self.views.items():
                 view.update(
@@ -238,7 +267,7 @@ def make_comparison_handler(state, scene_ports):
 
     class Handler(BaseHTTPRequestHandler):
         def send(self, body, content_type="application/json", status=200):
-            if content_type == "application/json":
+            if content_type == "application/json" and not isinstance(body, bytes):
                 body = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -254,6 +283,25 @@ def make_comparison_handler(state, scene_ports):
                     self.send(page, "text/html; charset=utf-8")
                 elif path == "/status":
                     self.send(state.snapshot())
+                elif state.report_root is not None and (
+                    path in ("/report", "/report.html", "/report.json", "/summary.md")
+                    or path.startswith("/assets/")
+                ):
+                    relative = (
+                        "report.html"
+                        if path == "/report"
+                        else unquote(path.lstrip("/"))
+                    )
+                    if relative not in state.report_files:
+                        raise ValueError("Unknown report asset")
+                    body = safe_path(state.report_root, relative).read_bytes()
+                    mime = (
+                        mimetypes.guess_type(relative)[0] or "application/octet-stream"
+                    )
+                    self.send(
+                        body,
+                        mime + ("; charset=utf-8" if mime.startswith("text/") else ""),
+                    )
                 elif path == "/favicon.ico":
                     self.send(b"", "image/x-icon", 204)
                 elif path.startswith("/region/"):
@@ -307,10 +355,10 @@ def make_comparison_handler(state, scene_ports):
     return Handler
 
 
-def serve_comparison(root, inventory, comparison, port, maximum):
+def serve_comparison(root, inventory, comparison, port, maximum, report=None):
     import viser
 
-    state = ComparisonState(root, inventory, comparison, maximum)
+    state = ComparisonState(root, inventory, comparison, maximum, report=report)
     servers, http = [], None
     scene_ports = {capture: port + i + 1 for i, capture in enumerate(CAPTURES)}
     try:

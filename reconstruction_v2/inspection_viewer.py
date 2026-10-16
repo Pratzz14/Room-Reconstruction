@@ -7,7 +7,11 @@ from .object_contracts import ObjectInventory
 from .sync_viewer import _SyncState, check_viewer_ports, serve_viewer
 
 
-def object_view(root, objects, port=8094, refinement=None, comparison=None):
+def object_view(
+    root, objects, port=8094, refinement=None, comparison=None, report=None
+):
+    if report and not comparison:
+        raise ValueError("--report requires --comparison")
     root = Path(root).resolve()
     check_viewer_ports(port, scene_count=2 if comparison else 1)
     manifest = read_json(root / "run_manifest.json")
@@ -30,6 +34,11 @@ def object_view(root, objects, port=8094, refinement=None, comparison=None):
             from .refined_inventory import RefinedInventory
 
             inventory = RefinedInventory(inventory, refinement)
+        if report:
+            from .change_report import verify_report
+
+            print("Verifying bound change report...", flush=True)
+            verify_report(report, inventory, comparison)
         inventory = ComparisonInventory(inventory, comparison)
     elif refinement:
         from .refined_inventory import InventoryModes
@@ -41,7 +50,7 @@ def object_view(root, objects, port=8094, refinement=None, comparison=None):
     if comparison:
         from .comparison_viewer import serve_comparison
 
-        serve_comparison(root, inventory, comparison, port, maximum)
+        serve_comparison(root, inventory, comparison, port, maximum, report=report)
         return
     state = _SyncState(root, captures, maximum, inventory, static=True)
     serve_viewer(state, port, page_name="objects.html", title="Object inspection")

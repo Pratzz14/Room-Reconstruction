@@ -56,6 +56,8 @@ Object output has a separate manifest/config/model lock and per-capture masks, o
 
 ## Shared alignment and large-change comparison
 
+Steps 8–9 add CPU-only evidence selection and structured JSON, Markdown, and portable HTML reports. The existing comparison viewer can serve the report and focus events from report links. See [report generation, verification, viewing, and sharing](docs/change_reports.md) for exact PowerShell commands, evidence limitations, and the versioned contract.
+
 The comparison stage is now available as a CPU-only saved-artifact module. It expects an
 after-to-before set of fixed-structure correspondences and never changes raw reconstruction
 or object files. Estimate and inspect a transform with:

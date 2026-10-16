@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>@@TITLE@@</title>
+  <style>
+    .paired-comparison{margin-top:22px}.paired-comparison>h3{font-size:17px}.comparison-side{border-top:3px solid #2575a1}.comparison-side>h3{font-size:18px}.reference-note{color:#80500b;background:#fff6e5;padding:8px;border-radius:4px;font-size:13px}.detailed-evidence{border-top:1px solid #d8dfe5;padding-top:12px;margin-top:20px}.comparison-side .muted,.comparison-side .reference-note{min-height:62px}
+    :root{font:15px/1.55 system-ui,sans-serif;color:#243040;background:#f2f4f6;color-scheme:light}*{box-sizing:border-box}body{margin:0}header,main{max-width:1320px;margin:auto;padding:24px}header{padding-bottom:8px}h1{font-size:30px;margin:0 0 8px}h2{font-size:22px;margin:0}h3{font-size:15px;margin:0 0 8px}p{margin:8px 0}a{color:#145e93}button,select,input{font:inherit;padding:8px;border:1px solid #a7b3bf;border-radius:5px;background:white;color:inherit}a:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #227db8;outline-offset:2px}nav,.controls,.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center}nav{margin:16px 0}.summary,article{background:white;border:1px solid #d0d8df;border-radius:10px;padding:22px;margin-bottom:20px}.summary{border-top:4px solid #2575a1}.muted,figcaption{color:#526173;font-size:12px}.warning{background:#fff5df;border:1px solid #edca7d;border-radius:6px;padding:12px 16px}.warning ul{padding-left:20px;margin:0}.filters{position:sticky;top:0;z-index:1;background:#f2f4f6;padding:12px 0;margin-bottom:12px}input{min-width:220px;flex:1}.event-heading{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.viewer-link{white-space:nowrap}.qualification,.limitations{color:#80500b;background:#fff6e5;padding:8px;border-radius:4px;font-size:13px}.evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.role{border:1px solid #d8dfe5;border-radius:7px;padding:14px;min-width:0}.controls{margin-bottom:10px}.controls select{max-width:100%;font-size:12px}figure{margin:0}figure img{display:block;width:100%;height:280px;object-fit:contain;background:#edf0f3;border-radius:4px}figcaption{margin-top:8px;overflow-wrap:anywhere}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;background:#f4f6f8;padding:12px;max-height:350px;overflow:auto}details{margin:10px 0}summary{cursor:pointer}.missing{padding:35px 15px;background:#f4f6f8;color:#526173}.measurement{font-size:13px}#empty{padding:24px}[hidden]{display:none!important}@media(max-width:700px){header,main{padding:14px}.summary,article{padding:15px}.evidence-grid{grid-template-columns:1fr}.event-heading{display:block}.viewer-link{display:inline-block;margin:6px 0}h1{font-size:25px}.filters{position:static}figure img{height:220px}}@media print{.filters,nav,.controls{display:none}.summary,article{break-inside:avoid}body{background:white}details{display:block}}
+  </style>
+</head>
+<body>
+  <header><h1>@@TITLE@@</h1><p>Saved-image evidence · relative units · no new model inference</p>
+    <nav><a href="report.json" download>Download JSON</a><a href="summary.md" download>Download Markdown</a><a href="report.html" download>Download HTML</a></nav>
+  </header>
+  <main>
+    <section class="summary" aria-label="Scene summary"><h2>Scene summary</h2><p>Alignment: <strong>@@ALIGNMENT@@</strong></p><p id="change-counts">@@COUNTS@@</p>
+      <p>Counts by trust: @@TRUST@@</p><p>Available saved frames: @@AVAILABLE@@<br>Selected unique frames: @@SELECTED@@</p>
+      <p class="muted">Coverage describes saved inputs and event evidence. Interactive 3D requires the local viewer.</p>
+      <div class="warning"><ul>@@WARNINGS@@</ul></div>
+      <details><summary>Evidence coverage by role</summary><pre>@@COVERAGE@@</pre></details>
+      <details><summary>Alignment diagnostics</summary><pre>@@DIAGNOSTICS@@</pre></details>
+    </section>
+    <div class="filters"><input id="search" type="search" aria-label="Search events" placeholder="Search object name or event ID">
+      <select id="type" aria-label="Change type"><option value="all">All change types</option>@@TYPES@@</select>
+      <select id="trust" aria-label="Event trust"><option value="all">All trust levels</option>@@TRUST_OPTIONS@@</select><span id="result-count" role="status"></span></div>
+    <div id="events">@@EVENTS@@</div><p id="empty" hidden>No events match these filters.</p>
+  </main>
+  <script>
+    const events=[...document.querySelectorAll('article')],search=document.getElementById('search'),type=document.getElementById('type'),trust=document.getElementById('trust');
+    function filter(){let count=0;for(const e of events){e.hidden=!((e.dataset.label+' '+e.id).includes(search.value.toLowerCase())&&(type.value==='all'||type.value===e.dataset.type)&&(trust.value==='all'||trust.value===e.dataset.trust));if(!e.hidden)count++;}document.getElementById('result-count').textContent=count+' events';document.getElementById('empty').hidden=count!==0;}
+    search.addEventListener('input',filter);type.addEventListener('change',filter);trust.addEventListener('change',filter);filter();
+    for(const role of document.querySelectorAll('.role')){
+      const frames=role.querySelector('.frame-choice'),kind=role.querySelector('.image-choice'),views=[...role.querySelectorAll('.view')];if(!frames)continue;
+      function show(){for(let i=0;i<views.length;i++)views[i].hidden=i!==Number(frames.value);const view=views[Number(frames.value)],images=JSON.parse(view.dataset.images);for(const option of kind.options)option.disabled=!images[option.value];if(!images[kind.value])kind.value='full';const path=images[kind.value];view.querySelector('img').src=path;view.querySelector('.enlarge').href=path;}
+      frames.addEventListener('change',show);kind.addEventListener('change',show);show();
+    }
+    if(location.protocol==='http:'||location.protocol==='https:')for(const link of document.querySelectorAll('.viewer-link'))link.href=new URL(link.dataset.path,location.origin).href;
+  </script>
+</body>
+</html>

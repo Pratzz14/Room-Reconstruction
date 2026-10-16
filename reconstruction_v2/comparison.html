@@ -22,7 +22,7 @@
   <div id="status" role="status" aria-live="polite">Connecting to both room views…</div>
   <main>
     <aside class="sidebar" aria-label="Shared objects">
-      <h2>Objects</h2><div id="counts" class="muted"></div>
+      <h2>Objects</h2><a id="report-link" href="/report" hidden style="color:#a9dfff">Open change report ↗</a><div id="counts" class="muted"></div>
       <input id="search" type="search" aria-label="Search objects" placeholder="Search object name">
       <select id="filter" aria-label="Change filter"><option value="all">All changes</option><option>moved</option><option>added</option><option>removed</option><option>unchanged</option><option>uncertain</option></select>
       <select id="object-list" size="8" aria-label="Shared object list"></select>
@@ -87,7 +87,9 @@
     }
     $('modal-close').onclick=()=>$('frame-modal').close();
     async function poll(){try{const r=await fetch('/status');if(!r.ok)throw new Error('Room server unavailable');const s=await r.json();for(const c of captures)$(c+'-ready').textContent=s.views[c].ready?'Ready':'Connecting…';}catch(e){message(e.message,true);}if(!fatal)setTimeout(poll,1000);}
-    (async()=>{try{const config=await post('/session',{});session=config.session;items=config.items;selected=config.selected&&config.selected.shared_id;for(const c of captures)popupOpen[c]=!!selected;filterObjects();$('counts').textContent=items.length+' shared identities · '+Object.entries(config.counts).map(([k,v])=>v+' '+k).join(' · ');$('footer').textContent='Alignment: '+config.alignment+' · independent orbit controls · relative units';render(config);message('Before on the left · After on the right');poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
+    function selectHash(){if(!session||!location.hash.startsWith('#event='))return;let id;try{id=decodeURIComponent(location.hash.slice(7));}catch{message('Invalid event link',true);return;}if(!items.some(i=>i.shared_id===id)){message('Event not found in this comparison',true);return;}selected=id;$('search').value='';$('filter').value='all';filterObjects();for(const c of captures){popupOpen[c]=true;frameKeys[c]=null;}request({select:id,focus:true});}
+    window.addEventListener('hashchange',selectHash);
+    (async()=>{try{const config=await post('/session',{});session=config.session;items=config.items;selected=config.selected&&config.selected.shared_id;for(const c of captures)popupOpen[c]=!!selected;filterObjects();$('report-link').hidden=!config.report_available;$('counts').textContent=items.length+' shared identities · '+Object.entries(config.counts).map(([k,v])=>v+' '+k).join(' · ');$('footer').textContent='Alignment: '+config.alignment+' · independent orbit controls · relative units';render(config);message('Before on the left · After on the right');selectHash();poll();}catch(e){message('Viewer initialization failed: '+e.message,true);}})();
   </script>
 </body>
 </html>

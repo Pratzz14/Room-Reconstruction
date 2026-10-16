@@ -1,5 +1,6 @@
 /data/
-/docs/
+/docs/*
+!/docs/change_reports.md
 /outputs/
 /.venv/
 /checkpoints/

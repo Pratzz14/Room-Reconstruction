@@ -41,20 +41,39 @@ def project_region(points, camera, mapping, frame):
 
 
 class RegionReferences:
-    def __init__(self, inventory, views):
+    def __init__(self, inventory, views=None, alignment=None):
         self.inventory, self.views = inventory, views
+        self.alignment = alignment or inventory.comparison["alignment"]
+        captures = views or inventory.captures
         self.transforms = {
             c: read_json(inventory.reconstruction / c / "image_transforms.json")
-            for c in views
+            for c in captures
         }
         self.cache, self.images = {}, {}
         self.source_arrays = {}
+        self.clouds, self.cameras = {}, {}
+
+    def cameras_for(self, capture):
+        if self.views is not None:
+            return self.views[capture].cameras[capture]
+        if capture not in self.cameras:
+            from .comparison import transformed_cameras
+
+            cameras = read_json(
+                self.inventory.reconstruction / capture / "cameras.json"
+            )
+            if capture == "after" and self.alignment.get("transform"):
+                cameras = transformed_cameras(cameras, self.alignment["transform"])
+            self.cameras[capture] = cameras
+        return self.cameras[capture]
 
     def region_points(self, capture, obj, source):
         if obj["point_count"]:
             _, geometry = self.inventory.object(capture, obj["id"])
             points = geometry["points"]
-        elif source is not None:
+        elif source is not None and (
+            source.get("source_region_box") or source.get("box")
+        ):
             if capture not in self.source_arrays:
                 with np.load(
                     self.inventory.reconstruction / capture / "observations.npz",
@@ -80,9 +99,28 @@ class RegionReferences:
             indices = np.unique(arrays["cloud_point_index"][rows])
             # Display clouds are already in Before coordinates, including After's
             # single alignment transform. Never transform these points again.
-            points = self.views[capture].points[capture][indices]
+            if self.views is not None:
+                points = self.views[capture].points[capture][indices]
+            else:
+                if capture not in self.clouds:
+                    with np.load(
+                        self.inventory.reconstruction / capture / "cloud.npz",
+                        allow_pickle=False,
+                    ) as saved:
+                        self.clouds[capture] = saved["points"]
+                points = self.clouds[capture][indices]
         else:
             return np.empty((0, 3))
+        # Standalone inventories contain original capture-local coordinates.
+        # Viewer inventories already contain aligned geometry and cloud rows.
+        if (
+            self.views is None
+            and capture == "after"
+            and self.alignment.get("transform")
+        ):
+            from .alignment import apply_similarity
+
+            points = apply_similarity(points, self.alignment["transform"])
         points = points[np.isfinite(points).all(1)]
         if len(points) > 512:
             points = points[np.linspace(0, len(points) - 1, 512).astype(int)]
@@ -92,31 +130,29 @@ class RegionReferences:
         token = identity([source_capture, obj["id"], source_id, target_capture])[:24]
         if token in self.cache:
             return self.cache[token]
+        if self.views is not None:
+            inspection = self.views[source_capture].inspection
+        else:
+            from .object_inspection import ObjectInspection
+
+            inspection = ObjectInspection(self.inventory)
         source = (
-            self.views[source_capture].inspection.evidence_record(
-                source_capture, source_id
-            )
-            if source_id
-            else None
+            inspection.evidence_record(source_capture, source_id) if source_id else None
         )
-        accepted = (
-            self.inventory.comparison["alignment"]["quality"]["status"] == "accepted"
-        )
+        accepted = self.alignment["quality"]["status"] == "accepted"
         points = (
             self.region_points(source_capture, obj, source)
             if accepted
             else np.empty((0, 3))
         )
         source_camera = (
-            self.views[source_capture].cameras[source_capture][source["frame_index"]]
-            if source
-            else None
+            self.cameras_for(source_capture)[source["frame_index"]] if source else None
         )
         rows = []
         for i, (frame, camera, mapping) in enumerate(
             zip(
                 self.inventory.captures[target_capture]["frames"],
-                self.views[target_capture].cameras[target_capture],
+                self.cameras_for(target_capture),
                 self.transforms[target_capture],
             )
         ):
