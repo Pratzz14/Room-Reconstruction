@@ -313,6 +313,11 @@ def build_report(inventory, comparison, output, config=None, review=None):
                         "coverage": reviewed["coverage"],
                         "usage": reviewed["usage"],
                         "status": reviewed["status"],
+                        **(
+                            {"pass": reviewed["review_pass"]}
+                            if reviewed.get("review_pass")
+                            else {}
+                        ),
                     },
                 )
                 report["warnings"] = [
@@ -323,7 +328,10 @@ def build_report(inventory, comparison, output, config=None, review=None):
                 if reviewed["status"] != "completed":
                     report["warnings"].append(
                         "VLM review is incomplete. "
-                        + (reviewed.get("stopped_reason") or "Some review work is pending.")
+                        + (
+                            reviewed.get("stopped_reason")
+                            or "Some review work is pending."
+                        )
                     )
             write_json(stage / "report.json", report)
             from .report_render import render_html, render_markdown
@@ -440,6 +448,11 @@ def verify_report(
                 "coverage": reviewed["coverage"],
                 "usage": reviewed["usage"],
                 "status": reviewed["status"],
+                **(
+                    {"pass": reviewed["review_pass"]}
+                    if reviewed.get("review_pass")
+                    else {}
+                ),
             }:
                 raise ValueError("Report review coverage/usage disagree")
         if set(originals) != set(event_ids):

@@ -81,7 +81,7 @@ class ComparisonState:
         for view in self.views.values():
             view.overlay = False
             view.settings[view.capture]["show_path"] = False
-        self.items = {}
+        self.items, self.review_frames = {}, {}
         for identity in getattr(
             inventory,
             "review_identities",
@@ -143,6 +143,20 @@ class ComparisonState:
                 if identity[c + "_id"]
             )
             change = label_obj.get("change", {})
+            self.review_frames[identity["shared_id"]] = {
+                capture: list(
+                    dict.fromkeys(
+                        ref["frame_id"]
+                        for row in change.get("review_findings", [])
+                        if not row.get("errors")
+                        and change.get("review_status") in ("confirmed", "corrected")
+                        for ref in row.get("finding", {})
+                        .get(capture, {})
+                        .get("evidence", [])
+                    )
+                )
+                for capture in CAPTURES
+            }
             self.items[identity["shared_id"]] = {
                 "shared_id": identity["shared_id"],
                 "label": label_obj["label"],
@@ -162,6 +176,7 @@ class ComparisonState:
         self.alignment = inventory.comparison["alignment"]["quality"]["status"]
         self.review_coverage = inventory.comparison.get("review_coverage")
         self.review_status = inventory.comparison.get("review_status")
+        self.review_pass = inventory.comparison.get("review_pass")
         primary_reasons = Counter(
             item["uncertainty_reasons"][0]["message"]
             if item["uncertainty_reasons"]
@@ -197,6 +212,7 @@ class ComparisonState:
                 "report_available": self.report is not None,
                 "review_coverage": self.review_coverage,
                 "review_status": self.review_status,
+                "review_pass": self.review_pass,
                 "uncertainty_summary": self.uncertainty_summary,
                 "event_aliases": self.event_aliases,
                 **self.snapshot(),
@@ -297,7 +313,18 @@ class ComparisonState:
                             previous["selected"]["id"] if previous["selected"] else None
                         )
                     if chosen is None and bundle["frames"]:
-                        chosen = bundle["frames"][0]["id"]
+                        preferred = self.review_frames.get(selected, {}).get(
+                            capture, []
+                        )
+                        chosen = next(
+                            (
+                                row["id"]
+                                for frame_id in preferred
+                                for row in bundle["frames"]
+                                if row["frame_id"] == frame_id
+                            ),
+                            bundle["frames"][0]["id"],
+                        )
                     record = next(
                         (r for r in bundle["frames"] if r["id"] == chosen), None
                     )

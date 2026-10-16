@@ -1,5 +1,6 @@
 """Source-bound review requests; classifications and distances are deliberately hidden."""
 
+import copy
 import json
 from pathlib import Path
 
@@ -31,6 +32,130 @@ movement describes visual placement relative to fixed landmarks; use unclear whe
 framing or evidence prevents comparison. Briefly explain observations and limitations.
 Image highlights identify proposed regions only; they do not prove object identity or absence.
 """
+
+SYSTEM_V2 = """Compare BEFORE and AFTER photographs of the same room. Review every requested
+shared_id exactly once. Inventory labels, IDs, highlights and boxes are hypotheses.
+
+Identify the physical object from visible shape, material, colour and distinctive
+details. Use full frames for room context and crops for recognition. Search the
+room-wide views and the labelled inventory gallery before deciding it disappeared.
+
+Use an existing object_id only when its pictured inventory entry depicts that
+same physical object. Never substitute a shelf, desk, chair or container for an
+object it supports. If a counterpart is visible but no supplied ID correctly
+identifies it, use object_id=null and give its precise visible region.
+Similar labels alone do not establish a match or an alternative candidate.
+
+Assess presence separately in each capture:
+- present: the named object is visibly identifiable in a cited region;
+- absent: its corresponding location is clearly visible and no counterpart is
+  found in the supplied room views;
+- occluded, outside_frame or unclear: use the specific limitation that applies.
+A missing detection, projected rectangle or empty crop alone cannot prove absence.
+For absence, name the fixed landmarks locating the inspected region.
+
+For matched objects, judge movement relative to fixed room structures. Camera
+angle, zoom, rotation, changed bedding or changed contents do not prove movement.
+Be decisive when object identity and physical placement are clearly visible.
+Do not use unclear solely because an inventory label is low confidence or 3D
+geometry is missing. Do not claim unchanged merely because two objects look alike.
+
+Use identity=same for an unambiguous target assignment, including a clearly
+one-sided presence finding. Use different when the two pictured candidates are
+different objects, and ambiguous only for actual competing physical matches.
+
+Cite only supplied frame IDs from the correct capture. Every box must be
+[x0,y0,x1,y1], normalized to 0..1000 in the ORIGINAL FULL FRAME:
+0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000.
+Never return pixel coordinates, crop coordinates, montage coordinates, or copied
+metadata bounds without checking the visible object. Use tight object boxes;
+for absence, box the corresponding inspected region.
+
+Explain the visible identifying features, fixed landmarks, before/after
+observations and any remaining limitation. Do not invent coordinates, distances,
+depth measurements or confidence scores. Numerical movement thresholds are
+applied separately. Return only the required structured JSON.
+"""
+
+
+SYSTEM_NATIVE = SYSTEM_V2.replace(
+    "[x0,y0,x1,y1], normalized to 0..1000 in the ORIGINAL FULL FRAME:\n0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000.",
+    "[y0,x0,y1,x1], Google's native box order, normalized to 0..1000 in the ORIGINAL FULL FRAME:\n0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000. The application converts this order internally.",
+).replace(
+    "angle, zoom, rotation, changed bedding or changed contents do not prove movement.",
+    "angle, zoom, rotation, changed bedding or changed contents do not prove movement.\nDistinguish substantial room-scale relocation from small adjustments on the same support; describe minor shifts without treating them as a large room relocation.",
+)
+
+
+def system_instruction(profile="legacy"):
+    if profile not in ("legacy", "visual-grounding-v2", "visual-grounding-native-v3"):
+        raise ValueError("Unknown visual review prompt profile")
+    return (
+        SYSTEM
+        if profile == "legacy"
+        else SYSTEM_NATIVE
+        if profile == "visual-grounding-native-v3"
+        else SYSTEM_V2
+    )
+
+
+def inventory_gallery(index, root, render):
+    paths, legends = [], []
+    for capture, objects in index["catalog"].items():
+        entries = []
+        for obj in objects:
+            events = [
+                e for e in index["events"].values() if e[capture + "_id"] == obj["id"]
+            ]
+            views = [
+                v for e in events for v in e["evidence"]["object_" + capture]["views"]
+            ]
+            if not views:
+                continue
+            view = views[0]
+            relative = view["images"].get("crop") or view["images"]["full"]
+            source = safe_path(root / "evidence", relative)
+            entries.append(
+                {
+                    "id": obj["id"],
+                    "label": obj["label"],
+                    "frame_id": view["frame_id"],
+                    "source": relative,
+                    "sha256": digest(source),
+                }
+            )
+        for start in range(0, len(entries), 8):
+            group = entries[start : start + 8]
+            name = "assets/gallery_" + identity([capture, group])[:24] + ".jpg"
+            path = root / name
+            if not path.exists():
+                if not render:
+                    raise ValueError("Missing inventory identity gallery")
+                canvas = Image.new("RGB", (1440, 520), "#172029")
+                draw = ImageDraw.Draw(canvas)
+                for n, item in enumerate(group):
+                    x, y = n % 4 * 360, n // 4 * 260
+                    draw.text((x + 5, y + 4), item["id"], fill="white")
+                    draw.text((x + 5, y + 18), item["label"], fill="white")
+                    with Image.open(root / "evidence" / item["source"]) as image:
+                        tile = image.convert("RGB")
+                        tile.thumbnail((350, 218))
+                    canvas.paste(tile, (x + 5, y + 37))
+                canvas.save(path, quality=90)
+            paths.append(path)
+            legends.append(
+                {
+                    "image": name,
+                    "kind": "inventory_gallery",
+                    "capture": capture,
+                    "tiles_row_major": [
+                        {k: v for k, v in item.items() if k not in ("source", "sha256")}
+                        for item in group
+                    ],
+                    "warning": "Labels are hypotheses; inspect the depicted object. Do not return gallery tile coordinates.",
+                }
+            )
+    return paths, legends
 
 
 def schema():
@@ -108,7 +233,7 @@ def schema():
     }
 
 
-def request_schema():
+def request_schema(profile="legacy"):
     """Bound future responses while retaining the original schema for old receipts."""
     result = schema()
     properties = result["properties"]["reviews"]["items"]["properties"]
@@ -120,6 +245,10 @@ def request_schema():
             "[x0,y0,x1,y1] normalized ORIGINAL FULL-FRAME coordinates from 0 to 1000, never pixel coordinates or crop-local coordinates"
         )
         box["anyOf"][0]["items"].update(minimum=0, maximum=1000)
+        if profile == "visual-grounding-native-v3":
+            box["description"] = (
+                "[y0,x0,y1,x1], Google's native normalized original-full-frame box order, 0..1000, never pixels or crop-local coordinates"
+            )
     return result
 
 
@@ -203,7 +332,9 @@ def request(
     render=True,
     candidates=None,
     reconstruction=None,
+    profile="legacy",
 ):
+    system_instruction(profile)
     root = Path(root)
     paths = [root / x["path"] for x in index["context_sheets"]]
     legends = [
@@ -215,9 +346,17 @@ def request(
         }
         for x in index["context_sheets"]
     ]
+    if profile != "legacy":
+        gallery_paths, gallery_legends = inventory_gallery(index, root, render)
+        paths.extend(gallery_paths)
+        legends.extend(gallery_legends)
     for sid in ids:
         for role, bundle in index["events"][sid]["evidence"].items():
-            for view in bundle["views"] if followup else bundle["views"][:2]:
+            for view in (
+                bundle["views"]
+                if followup
+                else bundle["views"][: (1 if profile != "legacy" else 2)]
+            ):
                 for kind, relative in view["images"].items():
                     if not relative:
                         continue
@@ -334,6 +473,62 @@ def request(
         prompt["candidate_check_instructions"] = (
             "These are unverified earlier suggestions, not confirmed objects. Inspect the new close-up and its full-frame context. A crop may contain empty space or an unrelated object. Confirm a new counterpart only if the named object is visibly identifiable in that candidate region and matches the other recording. For a presence change, verify that the source crop depicts the named object and the opposing crop shows the corresponding visible region. Search all room context for a counterpart before claiming absence. Otherwise use unclear; do not repeat the earlier suggestion. Continue using normalized original full-frame coordinates."
         )
+    if profile != "legacy":
+        for legend in legends:
+            if "width" not in legend:
+                continue
+
+            def normalized_fields(record, dimensions=legend):
+                for key in list(record):
+                    if key.endswith("_original_pixels"):
+                        box = record.pop(key)
+                        record[key.replace("_original_pixels", "_0_1000")] = (
+                            [
+                                box[i]
+                                * 1000
+                                / dimensions["width" if i % 2 == 0 else "height"]
+                                for i in range(4)
+                            ]
+                            if box
+                            else None
+                        )
+
+            normalized_fields(legend)
+            for use in legend.get("uses", []):
+                normalized_fields(use)
+        prompt["frame_index"] = {
+            fid: {
+                k: v
+                for k, v in frame.items()
+                if k in ("capture", "index", "width", "height")
+            }
+            for fid, frame in index["frames"].items()
+        }
+        prompt["coordinate_contract"] = (
+            "All supplied boxes are normalized original-full-frame 0..1000. Crop bounds locate the crop in that full frame. Inspect the object; metadata regions may cover unrelated surroundings."
+        )
+        if profile == "visual-grounding-native-v3":
+            for legend in legends:
+                for record in [legend, *legend.get("uses", [])]:
+                    for key in list(record):
+                        if key.endswith("_0_1000") and record[key] is not None:
+                            box = record.pop(key)
+                            record[key.replace("_0_1000", "_yxyx_0_1000")] = [
+                                box[1],
+                                box[0],
+                                box[3],
+                                box[2],
+                            ]
+            if candidates:
+                prompt["candidate_checks"] = copy.deepcopy(candidates)
+                for sides in prompt["candidate_checks"].values():
+                    for refs in sides.values():
+                        for ref in refs:
+                            b = ref["box"]
+                            ref["box"] = [b[1], b[0], b[3], b[2]]
+            prompt["coordinate_contract"] = (
+                "All boxes use Google's native [y0,x0,y1,x1] normalized original-full-frame order, 0..1000. Never use crop or montage coordinates."
+            )
     return json.dumps(prompt, sort_keys=True), paths
 
 
@@ -341,7 +536,7 @@ def has_extra(index, sid):
     return any(len(b["views"]) > 2 for b in index["events"][sid]["evidence"].values())
 
 
-def candidate_checks(findings, ids):
+def candidate_checks(findings, ids, *, confirm_existing=False):
     result = {}
     for sid in ids:
         row = findings.get(sid, {})
@@ -353,7 +548,7 @@ def candidate_checks(findings, ids):
             c: [r for r in f[c]["evidence"] if r["box"] is not None]
             for c in ("before", "after")
             if f[c]["presence"] in ("present", "absent")
-            and (presence_change or f[c]["object_id"] is None)
+            and (confirm_existing or presence_change or f[c]["object_id"] is None)
         }
         if refs:
             result[sid] = refs
@@ -390,3 +585,58 @@ def candidate_confirmed(finding, candidates):
         if not matched:
             return False
     return True
+
+
+def supplied_presence_confirmation(finding, sid, index, step):
+    """Accept another supplied corresponding-region view in a targeted follow-up.
+
+    New positive counterparts and room-context-only claims are excluded. Both
+    regions must match saved evidence roles and attached full-frame pictures.
+    """
+    if (
+        not step["followup"]
+        or step.get("prompt_profile") != "visual-grounding-native-v3"
+        or finding["identity"] != "same"
+        or finding["alternatives"]
+    ):
+        return False
+    if sorted(finding[c]["presence"] for c in ("before", "after")) != [
+        "absent",
+        "present",
+    ]:
+        return False
+    supplied = {p["path"] for p in step.get("images", [])}
+    checks = {}
+    for capture in ("before", "after"):
+        side = finding[capture]
+        if not side["region_visible"]:
+            return False
+        if side["presence"] == "present":
+            if (
+                side["object_id"] is None
+                or side["object_id"] != index["events"][sid][capture + "_id"]
+            ):
+                return False
+            role = "object_" + capture
+        else:
+            role = "old_location_after" if capture == "after" else "new_location_before"
+        refs = []
+        for view in index["events"][sid]["evidence"][role]["views"]:
+            full = "assets/" + identity([view["image_sha256"], "full"]) + ".jpg"
+            if full not in supplied or view.get("region_box") is None:
+                continue
+            refs.append(
+                {
+                    "frame_id": view["frame_id"],
+                    "box": [
+                        view["region_box"][i]
+                        * 1000
+                        / view["width" if i % 2 == 0 else "height"]
+                        for i in range(4)
+                    ],
+                }
+            )
+        if not refs:
+            return False
+        checks[capture] = refs
+    return candidate_confirmed(finding, checks)

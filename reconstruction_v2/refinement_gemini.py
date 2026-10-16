@@ -184,10 +184,15 @@ class Gemini:
             entries = read_json(ledger_path) if ledger_path.exists() else []
             now = self.clock()
             entries = [e for e in entries if now - e["time"] < 172800]
-            daily = [e for e in entries if self._day(e["time"]) == self._day(now)]
+            daily_all = [e for e in entries if self._day(e["time"]) == self._day(now)]
+            # Share the project ledger and lock, but enforce provider quotas per model.
+            model_entries = [
+                e for e in entries if e.get("model", cfg["model"]) == cfg["model"]
+            ]
+            daily = [e for e in model_entries if self._day(e["time"]) == self._day(now)]
             if (
                 not review
-                and sum(e["method"] == "generateContent" for e in daily)
+                and sum(e["method"] == "generateContent" for e in daily_all)
                 >= cfg["daily_generation_cap"]
             ):
                 raise ValueError(
@@ -219,7 +224,7 @@ class Gemini:
                 )
             # All calls count toward local RPM; generation input tokens are reserved before sending.
             wait = 0.0
-            recent = [e for e in entries if now - e["time"] < 60]
+            recent = [e for e in model_entries if now - e["time"] < 60]
             if len(recent) >= cfg["requests_per_minute"]:
                 wait = max(
                     wait,
@@ -382,7 +387,9 @@ class Gemini:
                 "responseMimeType": "application/json",
                 "responseJsonSchema": schema,
                 "maxOutputTokens": self.config["max_output_tokens"],
-                "thinkingConfig": {"thinkingLevel": "HIGH"},
+                "thinkingConfig": {"thinkingBudget": 4096}
+                if self.config["model"].startswith("gemini-2.5-")
+                else {"thinkingLevel": "HIGH"},
             },
         }
         if len(json.dumps(payload).encode()) > 19_000_000:

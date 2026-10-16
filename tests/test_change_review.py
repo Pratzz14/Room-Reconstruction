@@ -30,6 +30,7 @@ from reconstruction_v2.review_evidence import (
     request,
     request_schema,
     schema,
+    system_instruction,
 )
 from tests.fixtures import PROJECT
 
@@ -71,6 +72,68 @@ def finding(sid="s1", before="b1", after="a1", movement="moved"):
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_presence_confirmation_accepts_supplied_alternate_view_not_unseen_or_new_counterpart(
+        self,
+    ):
+        from reconstruction_v2.review_evidence import supplied_presence_confirmation
+
+        index = self.index()
+        f = finding(after=None, movement="unclear")
+        step = {
+            "followup": True,
+            "prompt_profile": "visual-grounding-native-v3",
+            "images": [],
+        }
+        index["events"]["s1"]["evidence"] = {}
+        for cap, role in [("before", "object_before"), ("after", "old_location_after")]:
+            sha = cap + "_image"
+            index["events"]["s1"]["evidence"][role] = {
+                "views": [
+                    {
+                        "frame_id": cap + "0",
+                        "region_box": [10, 8, 30, 32],
+                        "width": 100,
+                        "height": 80,
+                        "image_sha256": sha,
+                    }
+                ]
+            }
+            step["images"].append(
+                {"path": "assets/" + identity([sha, "full"]) + ".jpg"}
+            )
+        self.assertTrue(supplied_presence_confirmation(f, "s1", index, step))
+        missing = copy.deepcopy(step)
+        missing["images"].pop()
+        self.assertFalse(supplied_presence_confirmation(f, "s1", index, missing))
+        wrong = copy.deepcopy(f)
+        wrong["after"]["evidence"][0]["box"] = [700, 700, 900, 900]
+        self.assertFalse(supplied_presence_confirmation(wrong, "s1", index, step))
+        new = copy.deepcopy(f)
+        new["before"]["object_id"] = None
+        self.assertFalse(supplied_presence_confirmation(new, "s1", index, step))
+        step["followup"] = False
+        self.assertFalse(supplied_presence_confirmation(f, "s1", index, step))
+
+    def test_native_gemini_box_order_is_decoded_without_altering_receipt_answer(self):
+        from reconstruction_v2.change_review import _load_findings
+
+        raw = finding()
+        for cap in ("before", "after"):
+            raw[cap]["evidence"][0]["box"] = [100, 100, 400, 300]
+        original = copy.deepcopy(raw)
+        step = {
+            "ids": ["s1"],
+            "followup": False,
+            "answer": {"reviews": [raw]},
+            "prompt_profile": "visual-grounding-native-v3",
+        }
+        decoded = _load_findings([step], self.index())["s1"]
+        self.assertFalse(decoded["errors"])
+        self.assertEqual(
+            decoded["finding"]["before"]["evidence"][0]["box"], [100, 100, 300, 400]
+        )
+        self.assertEqual(raw, original)
+
     def test_legacy_coordinate_recovery_is_explicit_source_bound_and_replayable(self):
         from reconstruction_v2.change_review import _load_findings
         from reconstruction_v2.review_analysis import recover_supplied_pixel_boxes
@@ -216,7 +279,7 @@ class AnalysisTests(unittest.TestCase):
             "events": {o["shared_id"]: {**o, "label": "chair"} for o in self.originals},
         }
 
-    def evaluate(self, rows, *, localized=True):
+    def evaluate(self, rows, *, localized=True, confirmed=False, rejected=None):
         changes = saved_changes(self.inv, self.originals, self.matching, self.align, {})
         return reconcile(
             self.inv,
@@ -225,11 +288,24 @@ class AnalysisTests(unittest.TestCase):
             self.matching,
             self.align,
             {
-                r["shared_id"]: {"finding": r, "localized_followup": localized}
+                r["shared_id"]: {
+                    "finding": r,
+                    "localized_followup": localized,
+                    **({"identity_confirmation": True} if confirmed else {}),
+                }
                 for r in rows
             },
             self.index(),
+            rejected=rejected,
         )
+
+    def test_rejected_visual_claim_does_not_create_derived_counterpart(self):
+        f = finding()
+        f["after"]["object_id"] = None
+        self.assertTrue(self.evaluate([f])["derived_observations"])
+        rejected = self.evaluate([f], rejected={"s1"})
+        self.assertFalse(rejected["derived_observations"])
+        self.assertEqual(rejected["changes"]["events"][0]["type"], "uncertain")
 
     def test_moved_unchanged_and_visual_conflict(self):
         result = self.evaluate([finding()])
@@ -247,6 +323,29 @@ class AnalysisTests(unittest.TestCase):
                 "type"
             ],
             "unchanged",
+        )
+
+    def test_targeted_identity_confirmation_can_resolve_source_prior_but_not_collections(
+        self,
+    ):
+        self.inv.captures["before"]["objects"][0]["confidence"] = "low"
+        self.assertEqual(
+            self.evaluate([finding()])["changes"]["events"][0]["type"], "uncertain"
+        )
+        self.assertEqual(
+            self.evaluate([finding()], confirmed=True, localized=False)["changes"][
+                "events"
+            ][0]["type"],
+            "uncertain",
+        )
+        confirmed = self.evaluate([finding()], confirmed=True)["changes"]["events"][0]
+        self.assertEqual(confirmed["type"], "moved")
+        self.assertTrue(confirmed["identity_confirmations"])
+        self.assertEqual(self.inv.captures["before"]["objects"][0]["confidence"], "low")
+        self.inv.captures["before"]["objects"][0]["kind"] = "collection"
+        self.assertEqual(
+            self.evaluate([finding()], confirmed=True)["changes"]["events"][0]["type"],
+            "uncertain",
         )
 
     def test_rejected_alignment_stays_uncertain_and_pending_is_explicit(self):
@@ -521,11 +620,11 @@ class ReviewQuotaTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
 
     def test_explicit_model_continuation_has_separate_cache_and_shared_quota(self):
-        first = self.client(cfg={**self.cfg, "remaining_requests": 4})
+        first = self.client(cfg={**self.cfg, "remaining_requests": 2})
         first.generate(SYSTEM, "same evidence", schema(), [])
         second = self.client(
             "alternate",
-            {**self.cfg, "model": "gemini-3.5-flash-lite", "remaining_requests": 4},
+            {**self.cfg, "model": "gemini-3.5-flash-lite", "remaining_requests": 2},
         )
         self.assertEqual(first.cache, second.cache)
         second.generate(SYSTEM, "same evidence", schema(), [])
@@ -715,6 +814,27 @@ class SavedReviewTests(unittest.TestCase):
         self.assertEqual(split["changes"], reviewed["changes"])
         self.assertEqual(len(split_client.calls), 3)
         verify(split_root, f.inventory, f.comparison)
+        v2_root = f.base / "v2-prompt-review"
+        v2 = run(
+            f.inventory,
+            f.comparison,
+            v2_root,
+            client=FakeClient(),
+            prompt_profile="visual-grounding-v2",
+        )
+        self.assertEqual(v2["changes"], reviewed["changes"])
+        self.assertEqual(verify(v2_root, f.inventory, f.comparison), v2)
+        v2_index = read_json(v2_root / "evidence_index.json")
+        v2_prompt, v2_images = request(
+            v2_index,
+            sorted(v2_index["events"]),
+            v2_root,
+            profile="visual-grounding-v2",
+            render=False,
+        )
+        self.assertNotIn("_original_pixels", v2_prompt)
+        self.assertTrue(any("gallery_" in p.name for p in v2_images))
+        self.assertEqual(v2["inputs"]["prompt_profile"], "visual-grounding-v2")
         interrupted_root = f.base / "interrupted-review"
         partial = run(
             f.inventory,
@@ -770,14 +890,20 @@ class SavedReviewTests(unittest.TestCase):
         for n, row in enumerate(answer["reviews"]):
             cfg = configuration({"model": "gemini-3.5-flash-lite"} if n else {})
             ids = [row["shared_id"]]
-            prompt, images = request(receipt_index, ids, receipt_root)
+            profile = "visual-grounding-native-v3" if n else "legacy"
+            raw = copy.deepcopy(row)
+            if n:
+                for cap in ("before", "after"):
+                    b = raw[cap]["evidence"][0]["box"]
+                    raw[cap]["evidence"][0]["box"] = [b[1], b[0], b[3], b[2]]
+            prompt, images = request(receipt_index, ids, receipt_root, profile=profile)
             step = {
                 "ids": ids,
                 "followup": False,
-                "answer": {"reviews": [row]},
+                "answer": {"reviews": [raw]},
                 "origin": "gemini",
                 "prompt_sha256": identity(prompt),
-                "response_schema": request_schema(),
+                "response_schema": request_schema(profile),
                 "images": [
                     {
                         "path": p.relative_to(receipt_root).as_posix(),
@@ -788,12 +914,13 @@ class SavedReviewTests(unittest.TestCase):
             }
             if n:
                 step["provider_config"] = cfg
+                step["prompt_profile"] = profile
             rid = identity(
                 [
                     cfg["model"],
-                    SYSTEM,
+                    system_instruction(profile),
                     prompt,
-                    request_schema(),
+                    request_schema(profile),
                     [(p.name, digest(p)) for p in images],
                     cfg["max_output_tokens"],
                 ]
@@ -816,6 +943,29 @@ class SavedReviewTests(unittest.TestCase):
             receipt_index,
         )
         self.assertEqual(verify(receipt_root, f.inventory, f.comparison), mixed)
+        archived = copy.deepcopy(receipt_steps[0])
+        archived["active_ids"] = []
+        merged_steps = [archived, *receipt_steps]
+        merged = publish(
+            receipt_root,
+            f.inventory,
+            f.comparison,
+            configuration(),
+            merged_steps,
+            receipt_index,
+        )
+        self.assertEqual(verify(receipt_root, f.inventory, f.comparison), merged)
+        self.assertEqual(merged["changes"], mixed["changes"])
+        archived["active_ids"] = ["unknown"]
+        with self.assertRaises(ValueError):
+            publish(
+                receipt_root,
+                f.inventory,
+                f.comparison,
+                configuration(),
+                merged_steps,
+                receipt_index,
+            )
         receipt_steps[-1]["provider_config"]["model"] = "gemini-3.1-flash-lite"
         publish(
             receipt_root,

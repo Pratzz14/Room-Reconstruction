@@ -1,5 +1,6 @@
 """Resumable, source-bound Gemini review and replayable canonical results."""
 
+import copy
 from collections import Counter
 from pathlib import Path
 
@@ -15,7 +16,6 @@ from .review_analysis import (
 )
 from .review_config import configuration
 from .review_evidence import (
-    SYSTEM,
     candidate_checks,
     candidate_confirmed,
     has_extra,
@@ -23,6 +23,8 @@ from .review_evidence import (
     request,
     request_schema,
     schema,
+    supplied_presence_confirmation,
+    system_instruction,
 )
 
 VERSION = "change-review-v1"
@@ -39,7 +41,10 @@ def apply_local_validation(analysis, validation, index):
         raise ValueError("Invalid local visual validation")
     rejected = {}
     for row in validation["rejections"]:
-        if set(row) != {"shared_id", "frame_id", "image_sha256", "reason"}:
+        if set(row) not in (
+            {"shared_id", "frame_id", "image_sha256", "reason"},
+            {"shared_id", "frame_id", "image_sha256", "reason", "finding_sha256"},
+        ):
             raise ValueError("Invalid visual validation reference")
         sid, frame = row["shared_id"], index["frames"].get(row["frame_id"])
         if (
@@ -53,7 +58,18 @@ def apply_local_validation(analysis, validation, index):
             raise ValueError("Unsupported local visual validation reference")
         rejected[sid] = row
     for event in analysis["changes"]["events"]:
-        rows = [rejected[sid] for sid in event["source_event_ids"] if sid in rejected]
+        rows = [
+            rejected[sid]
+            for sid in event["source_event_ids"]
+            if sid in rejected
+            and (
+                not rejected[sid].get("finding_sha256")
+                or any(
+                    identity(r["finding"]) == rejected[sid]["finding_sha256"]
+                    for r in event.get("review_findings", [])
+                )
+            )
+        ]
         if rows:
             event.update(type="uncertain", trust="uncertain", review_status="uncertain")
             event["uncertainties"] = sorted(
@@ -75,9 +91,25 @@ def apply_local_validation(analysis, validation, index):
 
 def evaluated_output(output, inventory, comparison, steps, index):
     path = output / "local_visual_validation.json"
+    validation = read_json(path) if path.exists() else None
+    rejected = set()
+    if (output / "merge_provenance.json").exists() and read_json(
+        output / "merge_provenance.json"
+    ).get("exclude_rejected_assignments"):
+        findings = _load_findings(steps, index)
+        rejected = {
+            row["shared_id"]
+            for row in (validation or {}).get("rejections", [])
+            if row["shared_id"] in findings
+            and (
+                not row.get("finding_sha256")
+                or identity(findings[row["shared_id"]]["finding"])
+                == row["finding_sha256"]
+            )
+        }
     return apply_local_validation(
-        evaluate(inventory, comparison, steps, index),
-        read_json(path) if path.exists() else None,
+        evaluate(inventory, comparison, steps, index, rejected=rejected),
+        validation,
         index,
     )
 
@@ -91,19 +123,27 @@ def needs_followup(event):
     )
 
 
-def _inputs(inventory, comparison, config):
+def _inputs(inventory, comparison, config, profile="legacy"):
     return {
         "sources": source_record(inventory, comparison),
         "model": config["model"],
         "project_scope": config["project_scope"],
         "batch_size": config["batch_size"],
-        "prompt_sha256": identity([SYSTEM, schema()]),
+        "prompt_sha256": identity([system_instruction(profile), schema()]),
+        **({"prompt_profile": profile} if profile != "legacy" else {}),
     }
 
 
 def _load_findings(steps, index):
     findings = {}
     for step in steps:
+        active = step.get("active_ids", step["ids"])
+        if (
+            not isinstance(active, list)
+            or len(active) != len(set(active))
+            or set(active) - set(step["ids"])
+        ):
+            raise ValueError("Invalid active review identity selection")
         pixel_ids = step.get("recover_supplied_pixel_boxes", [])
         if (
             not isinstance(pixel_ids, list)
@@ -120,11 +160,20 @@ def _load_findings(steps, index):
         if malformed:
             rows = []
         for sid in step["ids"]:
+            if sid not in active:
+                continue
             candidates = [
                 r for r in rows if isinstance(r, dict) and r.get("shared_id") == sid
             ]
             if len(candidates) == 1:
                 finding, repairs = candidates[0], []
+                if step.get("prompt_profile") == "visual-grounding-native-v3":
+                    finding = copy.deepcopy(finding)
+                    for capture in ("before", "after"):
+                        for ref in finding.get(capture, {}).get("evidence", []):
+                            box = ref.get("box")
+                            if isinstance(box, list) and len(box) == 4:
+                                ref["box"] = [box[1], box[0], box[3], box[2]]
                 if sid in pixel_ids:
                     finding, repairs = recover_supplied_pixel_boxes(finding, sid, index)
                 findings[sid] = validate_finding(finding, sid, index)
@@ -136,6 +185,21 @@ def _load_findings(steps, index):
                     and sid in step.get("candidate_checks", {})
                     and candidate_confirmed(finding, step["candidate_checks"][sid])
                 )
+                if not findings[sid]["errors"] and supplied_presence_confirmation(
+                    finding, sid, index, step
+                ):
+                    findings[sid]["localized_followup"] = True
+                    findings[sid]["presence_confirmation_basis"] = (
+                        "supplied_corresponding_region_views"
+                    )
+                if (
+                    step.get("prompt_profile")
+                    in ("visual-grounding-v2", "visual-grounding-native-v3")
+                    and findings[sid]["localized_followup"]
+                    and finding["identity"] == "same"
+                    and not finding["alternatives"]
+                ):
+                    findings[sid]["identity_confirmation"] = True
             else:
                 findings[sid] = {
                     "finding": {"shared_id": sid},
@@ -144,7 +208,7 @@ def _load_findings(steps, index):
     return findings
 
 
-def evaluate(inventory, comparison, steps, index):
+def evaluate(inventory, comparison, steps, index, *, rejected=None):
     if hasattr(inventory, "after_transform"):
         raise ValueError(
             "Review requires capture-local source geometry; refusing a second alignment transform"
@@ -158,6 +222,7 @@ def evaluate(inventory, comparison, steps, index):
         read_json(comparison / "alignment.json"),
         findings,
         index,
+        rejected=rejected,
     )
 
 
@@ -197,7 +262,12 @@ def publish(output, inventory, comparison, config, steps, index, *, stopped=None
         )
     report = {
         "schema_version": VERSION,
-        "inputs": _inputs(inventory, comparison, config),
+        "inputs": _inputs(
+            inventory,
+            comparison,
+            config,
+            read_json(output / "inputs.json").get("prompt_profile", "legacy"),
+        ),
         "config": config,
         "status": "completed"
         if not analysis["coverage"]["pending"] and not stopped
@@ -207,6 +277,18 @@ def publish(output, inventory, comparison, config, steps, index, *, stopped=None
         "receipts": receipts,
         **analysis,
     }
+    if (output / "merge_provenance.json").exists():
+        fresh = {
+            sid
+            for step in steps
+            if step.get("prompt_profile", "legacy") != "legacy"
+            for sid in step.get("active_ids", step["ids"])
+        }
+        report["review_pass"] = {
+            "fresh_reviewed": len(fresh),
+            "inherited": len(index["events"]) - len(fresh),
+            "total": len(index["events"]),
+        }
     write_json(output / "steps.json", steps)
     write_json(output / "review.json", report)
     lines = [
@@ -261,7 +343,13 @@ def run(
     credential_source=None,
     batch_limit=None,
     execution_config=None,
+    prompt_profile="legacy",
+    execution_prompt_profile=None,
+    confirm_ids=None,
 ):
+    system_instruction(prompt_profile)
+    actual_profile = execution_prompt_profile or prompt_profile
+    system_instruction(actual_profile)
     comparison, output = Path(comparison).resolve(), Path(output).resolve()
     config = configuration(config)
     provider_config = configuration(execution_config) if execution_config else config
@@ -297,7 +385,7 @@ def run(
         raise ValueError("Review requires comparison-v2 changes")
     output.mkdir(parents=True, exist_ok=True)
     with exclusive(output / ".review.lock"):
-        inputs = _inputs(inventory, comparison, config)
+        inputs = _inputs(inventory, comparison, config, prompt_profile)
         evidence = None
         if (output / "inputs.json").exists():
             if read_json(output / "inputs.json") != inputs:
@@ -370,10 +458,28 @@ def run(
             )
         ids = sorted(index["events"])
         reviewed = {
-            sid for step in steps if not step["followup"] for sid in step["ids"]
+            sid
+            for step in steps
+            if not step["followup"]
+            for sid in step.get("active_ids", step["ids"])
         }
         pending = [sid for sid in ids if sid not in reviewed]
         queue = [(pending[i : i + size], False) for i in range(0, len(pending), size)]
+        if confirm_ids:
+            followed = {
+                sid
+                for step in steps
+                if step["followup"]
+                for sid in step.get("active_ids", step["ids"])
+            }
+            if set(confirm_ids) - reviewed or set(confirm_ids) & followed:
+                raise ValueError(
+                    "Priority confirmations need an initial review and no previous follow-up"
+                )
+            queue = [
+                (confirm_ids[i : i + size], True)
+                for i in range(0, len(confirm_ids), size)
+            ] + queue
         offline = None
         if answers is not None:
             offline = read_json(answers)
@@ -407,11 +513,19 @@ def run(
                     state = evaluated_output(
                         output, inventory, comparison, steps, index
                     )
-                    done = {sid for s in steps if s["followup"] for sid in s["ids"]}
+                    done = {
+                        sid
+                        for s in steps
+                        if s["followup"]
+                        for sid in s.get("active_ids", s["ids"])
+                    }
                     uncertain = {
                         sid
                         for e in state["changes"]["events"]
                         if needs_followup(e)
+                        or prompt_profile != "legacy"
+                        and e["type"] == "uncertain"
+                        and "alignment_not_accepted" not in e["uncertainties"]
                         for sid in e["source_event_ids"]
                     }
                     followups = (
@@ -422,7 +536,11 @@ def run(
                             and (
                                 has_extra(index, sid)
                                 or sid
-                                in candidate_checks(_load_findings(steps, index), [sid])
+                                in candidate_checks(
+                                    _load_findings(steps, index),
+                                    [sid],
+                                    confirm_existing=prompt_profile != "legacy",
+                                )
                             )
                         ]
                         if offline is None
@@ -436,7 +554,11 @@ def run(
                         break
                 batch, followup = queue.pop(0)
                 checks = (
-                    candidate_checks(_load_findings(steps, index), batch)
+                    candidate_checks(
+                        _load_findings(steps, index),
+                        batch,
+                        confirm_existing=prompt_profile != "legacy",
+                    )
                     if followup
                     else None
                 )
@@ -447,6 +569,7 @@ def run(
                     followup=followup,
                     candidates=checks,
                     reconstruction=inventory.reconstruction,
+                    profile=actual_profile,
                 )
                 try:
                     answer = (
@@ -459,9 +582,9 @@ def run(
                         }
                         if offline is not None
                         else provider.generate(
-                            SYSTEM,
+                            system_instruction(actual_profile),
                             prompt,
-                            request_schema(),
+                            request_schema(actual_profile),
                             images,
                             retry_failed=retry_failed,
                         )
@@ -487,7 +610,12 @@ def run(
                         else "injected",
                         "prompt_sha256": identity(prompt),
                         "max_output_tokens": config["max_output_tokens"],
-                        "response_schema": request_schema(),
+                        "response_schema": request_schema(actual_profile),
+                        **(
+                            {"prompt_profile": actual_profile}
+                            if actual_profile != "legacy"
+                            else {}
+                        ),
                         "provider_config": provider_config,
                         "candidate_checks": checks or {},
                         "images": [
@@ -531,7 +659,7 @@ def verify(
     report = read_json(output / "review.json")
     config = configuration(report["config"])
     if report.get("schema_version") != VERSION or report["inputs"] != _inputs(
-        inventory, comparison, config
+        inventory, comparison, config, report["inputs"].get("prompt_profile", "legacy")
     ):
         raise ValueError("Review belongs to stale/different sources or prompt")
     if not comparison_verified:
@@ -597,6 +725,15 @@ def verify(
     steps = read_json(output / "steps.json")
     seen = set()
     for step in steps:
+        active = step.get("active_ids", step["ids"])
+        if (
+            not isinstance(active, list)
+            or len(active) != len(set(active))
+            or set(active) - set(step["ids"])
+        ):
+            raise ValueError("Invalid active review identity selection")
+        prompt_profile = step.get("prompt_profile", "legacy")
+        system_instruction(prompt_profile)
         if (
             type(step["followup"]) is not bool
             or not step["ids"]
@@ -607,12 +744,15 @@ def verify(
             key = (sid, step["followup"])
             if (
                 sid not in index["events"]
-                or key in seen
-                or step["followup"]
+                or sid in active
+                and key in seen
+                or sid in active
+                and step["followup"]
                 and (sid, False) not in seen
             ):
                 raise ValueError("Invalid duplicate/unknown review or follow-up")
-            seen.add(key)
+            if sid in active:
+                seen.add(key)
         prompt, images = request(
             index,
             step["ids"],
@@ -621,6 +761,7 @@ def verify(
             render=False,
             candidates=step.get("candidate_checks"),
             reconstruction=inventory.reconstruction,
+            profile=prompt_profile,
         )
         if identity(prompt) != step["prompt_sha256"] or step["images"] != [
             {"path": p.relative_to(output).as_posix(), "sha256": digest(p)}
@@ -637,12 +778,16 @@ def verify(
             ):
                 raise ValueError("Gemini continuation changed bound project/settings")
             response_schema = step.get("response_schema", schema())
-            if response_schema not in (schema(), request_schema()):
+            if response_schema not in (
+                schema(),
+                request_schema(),
+                request_schema("visual-grounding-native-v3"),
+            ):
                 raise ValueError("Unsupported saved Gemini review response schema")
             request_id = identity(
                 [
                     provider_config["model"],
-                    SYSTEM,
+                    system_instruction(prompt_profile),
                     prompt,
                     response_schema,
                     [(str(p.name), digest(p)) for p in images],
@@ -657,6 +802,23 @@ def verify(
             ):
                 raise ValueError("Gemini review disagrees with its generation receipt")
     expected = evaluated_output(output, inventory, comparison, steps, index)
+    if report.get("review_pass"):
+        if not (output / "merge_provenance.json").exists():
+            raise ValueError("Missing review merge provenance")
+        fresh = {
+            sid
+            for step in steps
+            if step.get("prompt_profile", "legacy") != "legacy"
+            for sid in step.get("active_ids", step["ids"])
+        }
+        if report["review_pass"] != {
+            "fresh_reviewed": len(fresh),
+            "inherited": len(index["events"]) - len(fresh),
+            "total": len(index["events"]),
+        }:
+            raise ValueError(
+                "Review pass coverage disagrees with active source findings"
+            )
     if resume:
         return report
     if any(report[k] != v for k, v in expected.items()):
@@ -691,6 +853,7 @@ def apply_to_display(inventory, review):
         "change_counts": review["changes"]["counts"],
         "review_coverage": review["coverage"],
         "review_status": review["status"],
+        "review_pass": review.get("review_pass"),
     }
     for data in adapted.captures.values():
         for obj in data["objects"]:

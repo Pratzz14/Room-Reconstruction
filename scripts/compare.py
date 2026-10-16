@@ -40,6 +40,20 @@ def main():
             )
             p.add_argument("--prepare-only", action="store_true")
             p.add_argument(
+                "--prompt-profile",
+                choices=("legacy", "visual-grounding-v2", "visual-grounding-native-v3"),
+                default="legacy",
+            )
+            p.add_argument(
+                "--execution-prompt-profile",
+                choices=("legacy", "visual-grounding-v2", "visual-grounding-native-v3"),
+            )
+            p.add_argument(
+                "--confirm-ids",
+                nargs="+",
+                help="Prioritize one allowed follow-up for already reviewed identities",
+            )
+            p.add_argument(
                 "--answers",
                 type=Path,
                 help="Import saved structured answers without provider calls",
@@ -133,6 +147,9 @@ def main():
                 evidence_report=args.evidence_report,
                 credential_source=args.credential_source,
                 batch_limit=args.batch_size_limit,
+                prompt_profile=args.prompt_profile,
+                execution_prompt_profile=args.execution_prompt_profile,
+                confirm_ids=args.confirm_ids,
                 execution_config=read_json(args.execution_config)
                 if args.execution_config
                 else None,

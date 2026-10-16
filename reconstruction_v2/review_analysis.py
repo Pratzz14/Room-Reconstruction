@@ -263,7 +263,17 @@ def derived_observation(capture, side, label, inventory):
     return {"object": obj, "context": contexts[0], "contexts": contexts}
 
 
-def reconcile(inventory, changes, originals, matching, alignment, findings, index):
+def reconcile(
+    inventory,
+    changes,
+    originals,
+    matching,
+    alignment,
+    findings,
+    index,
+    *,
+    rejected=None,
+):
     """Replay saved findings into one canonical, conservative reviewed analysis."""
     source_ids = {
         (c, o["id"]) for c, d in inventory.captures.items() for o in d["objects"]
@@ -286,13 +296,26 @@ def reconcile(inventory, changes, originals, matching, alignment, findings, inde
             **validate_finding(f["finding"], sid, index),
             "localized_followup": f.get("localized_followup", False),
             **(
+                {"presence_confirmation_basis": f["presence_confirmation_basis"]}
+                if f.get("presence_confirmation_basis")
+                else {}
+            ),
+            **(
                 {"coordinate_repairs": f["coordinate_repairs"]}
                 if f.get("coordinate_repairs")
+                else {}
+            ),
+            **(
+                {"identity_confirmation": True}
+                if f.get("identity_confirmation")
                 else {}
             ),
         }
         for sid, f in findings.items()
     }
+    for sid in rejected or ():
+        if sid in valid:
+            valid[sid]["errors"].append("local_visual_contradiction")
     for original in originals:
         sid = original["shared_id"]
         result = valid.get(sid)
@@ -426,6 +449,38 @@ def reconcile(inventory, changes, originals, matching, alignment, findings, inde
                 "ambiguous" if (c, oid) in blocked else "unmatched",
             )
     augmented = AugmentedInventory(inventory, list(derived.values()))
+    confirmations = {}
+    for sid, row in valid.items():
+        if (
+            row["errors"]
+            or not row.get("identity_confirmation")
+            or not row.get("localized_followup")
+        ):
+            continue
+        finding = row["finding"]
+        if finding["identity"] != "same" or finding["alternatives"]:
+            continue
+        for c in CAPTURES:
+            side = finding[c]
+            oid = side["object_id"]
+            if (
+                side["presence"] != "present"
+                or not side["region_visible"]
+                or (c, oid) in blocked
+                or oid is None
+            ):
+                continue
+            obj, _ = augmented.object(c, oid)
+            if obj.get("kind") == "collection" or obj.get("confidence") != "low":
+                continue
+            obj["confidence"] = "high"
+            confirmations[(c, oid)] = {
+                "capture": c,
+                "object_id": oid,
+                "source_event_id": sid,
+                "evidence": side["evidence"],
+                "basis": "targeted_visual_identity_confirmation",
+            }
     evaluated = saved_changes(
         augmented,
         identities,
@@ -534,6 +589,16 @@ def reconcile(inventory, changes, originals, matching, alignment, findings, inde
             else "corrected"
         )
         event["review_status"] = status
+        confirmed = [
+            confirmations[(c, event[c + "_id"])]
+            for c in CAPTURES
+            if (c, event[c + "_id"]) in confirmations
+        ]
+        if confirmed:
+            event["identity_confirmations"] = confirmed
+            event["explanation"] += (
+                " Source detection identity confirmed in a targeted source-picture follow-up."
+            )
         details = " ".join(f["explanation"] for f in applicable)
         event["explanation"] += " VLM review: " + (
             details or ", ".join(reasons) or "unresolved"

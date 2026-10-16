@@ -249,6 +249,14 @@ def render_html(report):
                 + str(report["review_summary"]["coverage"]["reviewed"])
                 + "/"
                 + str(report["review_summary"]["coverage"]["total"])
+                + (
+                    " · fresh "
+                    + str(report["review_summary"]["pass"]["fresh_reviewed"])
+                    + "/"
+                    + str(report["review_summary"]["pass"]["total"])
+                    if report["review_summary"].get("pass")
+                    else ""
+                )
                 if report.get("review_summary")
                 else ""
             )
