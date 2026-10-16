@@ -1,3 +1,0 @@
--r requirements-refinement.txt
-scipy>=1.14,<2
-opencv-python-headless>=4.10,<5

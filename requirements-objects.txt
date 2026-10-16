@@ -1,4 +1,4 @@
-# Isolated Colab environment only. Keep saved viewing on requirements-viewer.txt.
+# Isolated Colab environment only. Keep saved viewing on requirements.txt.
 torch==2.8.0
 torchvision==0.23.0
 transformers==5.13.0

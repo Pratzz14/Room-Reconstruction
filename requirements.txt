@@ -1,0 +1,10 @@
+# Local saved-result viewing, refinement, and CPU comparison.
+# GPU inference uses the separate requirements-reconstruction.txt and requirements-objects.txt.
+numpy>=2,<3
+Pillow>=11,<13
+viser==1.1.1
+av>=16.1,<17
+requests>=2.32,<3
+tzdata>=2025.2
+scipy>=1.14,<2
+opencv-python-headless>=4.10,<5
